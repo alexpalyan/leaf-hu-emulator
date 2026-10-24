@@ -362,6 +362,14 @@ usb_serial_set_data(int bus, int addr, int parity, int data, int stop) "dev %d:%
 usb_serial_set_flow_control(int bus, int addr, int index) "dev %d:%u flow control %d"
 usb_serial_set_xonxoff(int bus, int addr, uint8_t xon, uint8_t xoff) "dev %d:%u xon 0x%x xoff 0x%x"
 
+# dev-cdc-acm.c
+usb_cdc_acm_event(const char *event, uint32_t value, uint32_t value2) "%s %u 0x%x"
+usb_cdc_acm_control(int type, int request, int value, int index, int length, int status, const char *data) "type 0x%02x request 0x%02x value 0x%04x index %d length %d status %d data %s"
+usb_cdc_acm_line_coding(const char *operation, uint32_t baud, uint8_t stop_bits, uint8_t parity, uint8_t data_bits) "%s baud %u stop %u parity %u data %u"
+usb_cdc_acm_control_lines(uint8_t dtr, uint8_t rts) "DTR %u RTS %u"
+usb_cdc_acm_serial_state(const char *event, bool dcd, bool dsr, uint16_t state) "%s DCD %u DSR %u bits 0x%x"
+usb_cdc_acm_bytes(const char *event, const char *direction, size_t length, const char *data) "%s %s length %zu data %s"
+
 # canokey.c
 canokey_emu_stall_ep(uint8_t ep) "ep %d"
 canokey_emu_set_address(uint8_t addr) "addr %d"

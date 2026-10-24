@@ -87,7 +87,7 @@ connected through a QEMU chardev:
 ```sh
 build-release/qemu-system-arm -M clarion-qy8,tcu=on \
     -chardev socket,id=tcu,path=/tmp/qy8-tcu.sock,server=on,wait=off \
-    -d guest_errors -D usb-events.log
+    -trace events=/tmp/tcu-trace.events,file=/tmp/tcu-trace.log
 ```
 
 The model is a regular `usb-cdc-acm` USB device on `usb-bus.0`; `tcu=on` is a
@@ -101,16 +101,16 @@ that bus check.
 
 The host connects to the socket as a client. Bytes from CDC bulk OUT are sent
 to the chardev; bytes received from the chardev are delivered through bulk IN.
-The device logs control transfers, line coding, DTR/RTS, break, bulk traffic,
-and CDC SERIAL_STATE changes with guest virtual time. The JSON records use the
-`LOG_GUEST_ERROR` log category, so `usb-events.log` can also contain other
-guest-error messages; retain lines that begin with a JSON object when building
-a USB JSONL trace.
+Trace events record control transfers, line coding, DTR/RTS, break, bulk data,
+and CDC SERIAL_STATE changes. The event file can enable the `usb_cdc_acm_*`
+events listed in `hw/usb/trace-events`. Convert those trace lines to JSONL
+when an evidence workflow needs structured records; the device does not write
+JSON through `LOG_GUEST_ERROR`.
 
-The current model is experimental. The QY8 Windows CE image has been observed
-to read its descriptors and set the configuration, but it has not yet been
-confirmed to bind its ACM client driver. A matching VID:PID alone does not
-prove that the guest has created a modem port.
+In the T240 `tcu=on` run, the guest attached its ACM driver, opened the modem
+port, completed AT initialization, and entered PPP data mode after
+`ATD*99***1#`; this was confirmed by the guest debug log and the nonempty modem
+list at `0x94fc4`.
 
 ### Board selection
 

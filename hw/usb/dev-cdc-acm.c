@@ -7,7 +7,6 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
 #include "qemu/bswap.h"
@@ -19,6 +18,7 @@
 #include "qom/object.h"
 #include "qapi/visitor.h"
 #include "desc.h"
+#include "trace.h"
 
 #define TYPE_USB_CDC_ACM "usb-cdc-acm"
 OBJECT_DECLARE_SIMPLE_TYPE(USBCDCACMState, USB_CDC_ACM)
@@ -288,52 +288,22 @@ static char *cdc_acm_hex(const uint8_t *buf, size_t len)
     return g_string_free(str, false);
 }
 
-static void cdc_acm_log(const char *event, const char *fields)
-{
-    qemu_log_mask(LOG_GUEST_ERROR,
-                  "{\"tick_ns\":%" PRId64 ",\"event\":\"%s\"%s}\n",
-                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), event, fields);
-}
-
-static void cdc_acm_log_state(const char *event, const char *format, ...)
-{
-    va_list ap;
-    char *fields;
-
-    va_start(ap, format);
-    fields = g_strdup_vprintf(format, ap);
-    va_end(ap);
-    cdc_acm_log(event, fields);
-    g_free(fields);
-}
-
-static void cdc_acm_log_control(USBPacket *p, int request, int value, int index,
-                                int length, const uint8_t *data,
-                                size_t data_len)
+static void cdc_acm_trace_control(USBPacket *p, int request, int value,
+                                  int index, int length, const uint8_t *data,
+                                  size_t data_len)
 {
     char *hex = cdc_acm_hex(data, data_len);
-    char *fields =
-        g_strdup_printf(",\"bmRequestType\":%u,\"bRequest\":%u,\"wValue\":%u"
-                        ",\"wIndex\":%u,\"wLength\":%u,\"data\":\"%s\""
-                        ",\"status\":%d",
-                        (request >> 8) & 0xff, request & 0xff, value & 0xffff,
-                        index & 0xffff, length & 0xffff, hex, p->status);
-
-    cdc_acm_log("control", fields);
-    g_free(fields);
+    trace_usb_cdc_acm_control((request >> 8) & 0xff, request & 0xff,
+                              value & 0xffff, index & 0xffff, length & 0xffff,
+                              p->status, hex);
     g_free(hex);
 }
 
-static void cdc_acm_log_bytes(const char *event, const char *direction,
-                              const uint8_t *data, size_t len)
+static void cdc_acm_trace_bytes(const char *event, const char *direction,
+                                const uint8_t *data, size_t len)
 {
     char *hex = cdc_acm_hex(data, len);
-    char *fields =
-        g_strdup_printf(",\"direction\":\"%s\",\"length\":%zu,\"data\":\"%s\"",
-                        direction, len, hex);
-
-    cdc_acm_log(event, fields);
-    g_free(fields);
+    trace_usb_cdc_acm_bytes(event, direction, len, hex);
     g_free(hex);
 }
 
@@ -346,9 +316,8 @@ static void cdc_acm_set_serial_state(USBCDCACMState *s, uint16_t state)
 
     s->serial_state = state;
     s->serial_state_pending = true;
-    cdc_acm_log_state("serial_state_set", ",\"dcd\":%u,\"dsr\":%u,\"bits\":%u",
-                      !!(state & CDC_ACM_RX_CARRIER),
-                      !!(state & CDC_ACM_TX_CARRIER), state);
+    trace_usb_cdc_acm_serial_state("set", !!(state & CDC_ACM_RX_CARRIER),
+                                   !!(state & CDC_ACM_TX_CARRIER), state);
     usb_wakeup(s->intr, 0);
     usb_wakeup(s->intr_secondary, 0);
 }
@@ -395,7 +364,7 @@ static void cdc_acm_reset(USBDevice *dev)
     s->rts = 0;
     s->serial_state = 0;
     s->serial_state_pending = false;
-    cdc_acm_log("reset", "");
+    trace_usb_cdc_acm_event("reset", 0, 0);
 }
 
 static void cdc_acm_handle_control(USBDevice *dev, USBPacket *p, int request,
@@ -409,7 +378,7 @@ static void cdc_acm_handle_control(USBDevice *dev, USBPacket *p, int request,
     ret = usb_desc_handle_control(dev, p, request, value, index, length, data);
     if (ret >= 0) {
         data_len = (request >> 8) & USB_DIR_IN ? p->actual_length : length;
-        cdc_acm_log_control(p, request, value, index, length, data, data_len);
+        cdc_acm_trace_control(p, request, value, index, length, data, data_len);
         return;
     }
 
@@ -423,11 +392,9 @@ static void cdc_acm_handle_control(USBDevice *dev, USBPacket *p, int request,
         s->parity = data[5];
         s->data_bits = data[6];
         data_len = length;
-        cdc_acm_log_control(p, request, value, index, length, data, data_len);
-        cdc_acm_log_state("set_line_coding",
-                          ",\"baud\":%u,\"stop_bits\":%u,\"parity\":%u"
-                          ",\"data_bits\":%u",
-                          s->baud, s->stop_bits, s->parity, s->data_bits);
+        cdc_acm_trace_control(p, request, value, index, length, data, data_len);
+        trace_usb_cdc_acm_line_coding("set", s->baud, s->stop_bits, s->parity,
+                                      s->data_bits);
         return;
     case ClassInterfaceRequest | CDC_ACM_GET_LINE_CODING:
         if ((index != 3 && index != 4) || length < 7) {
@@ -438,11 +405,9 @@ static void cdc_acm_handle_control(USBDevice *dev, USBPacket *p, int request,
         data[5] = s->parity;
         data[6] = s->data_bits;
         p->actual_length = 7;
-        cdc_acm_log_control(p, request, value, index, length, data, 7);
-        cdc_acm_log_state("get_line_coding",
-                          ",\"baud\":%u,\"stop_bits\":%u,\"parity\":%u"
-                          ",\"data_bits\":%u",
-                          s->baud, s->stop_bits, s->parity, s->data_bits);
+        cdc_acm_trace_control(p, request, value, index, length, data, 7);
+        trace_usb_cdc_acm_line_coding("get", s->baud, s->stop_bits, s->parity,
+                                      s->data_bits);
         return;
     case ClassInterfaceOutRequest | CDC_ACM_SET_CONTROL_LINE:
         if (index != 3 && index != 4) {
@@ -450,22 +415,21 @@ static void cdc_acm_handle_control(USBDevice *dev, USBPacket *p, int request,
         }
         s->dtr = value & 1;
         s->rts = (value >> 1) & 1;
-        cdc_acm_log_control(p, request, value, index, length, NULL, 0);
-        cdc_acm_log_state("set_control_line_state", ",\"dtr\":%u,\"rts\":%u",
-                          s->dtr, s->rts);
+        cdc_acm_trace_control(p, request, value, index, length, NULL, 0);
+        trace_usb_cdc_acm_control_lines(s->dtr, s->rts);
         return;
     case ClassInterfaceOutRequest | CDC_ACM_SEND_BREAK:
-        cdc_acm_log_control(p, request, value, index, length, NULL, 0);
-        cdc_acm_log_state("send_break", ",\"duration\":%u", value & 0xffff);
+        cdc_acm_trace_control(p, request, value, index, length, NULL, 0);
+        trace_usb_cdc_acm_event("send_break", value & 0xffff, 0);
         return;
     case InterfaceRequest | USB_REQ_GET_INTERFACE:
         data[0] = 0;
         p->actual_length = 1;
-        cdc_acm_log_control(p, request, value, index, length, data, 1);
+        cdc_acm_trace_control(p, request, value, index, length, data, 1);
         return;
     case InterfaceOutRequest | USB_REQ_SET_INTERFACE:
     case EndpointOutRequest | USB_REQ_CLEAR_FEATURE:
-        cdc_acm_log_control(p, request, value, index, length, NULL, 0);
+        cdc_acm_trace_control(p, request, value, index, length, NULL, 0);
         return;
     default:
         break;
@@ -473,9 +437,9 @@ static void cdc_acm_handle_control(USBDevice *dev, USBPacket *p, int request,
 
 stall:
     p->status = USB_RET_STALL;
-    cdc_acm_log_control(p, request, value, index, length, data,
-                        (request >> 8) & USB_DIR_IN ? p->actual_length
-                                                    : length);
+    cdc_acm_trace_control(p, request, value, index, length, data,
+                          (request >> 8) & USB_DIR_IN ? p->actual_length
+                                                      : length);
 }
 
 static void cdc_acm_handle_data(USBDevice *dev, USBPacket *p)
@@ -494,7 +458,7 @@ static void cdc_acm_handle_data(USBDevice *dev, USBPacket *p)
         }
         usb_packet_copy(p, buf, len);
         p->actual_length = len;
-        cdc_acm_log_bytes("bulk", "out", buf, len);
+        cdc_acm_trace_bytes("bulk", "out", buf, len);
         qemu_chr_fe_write_all(&s->chr, buf, len);
         return;
     }
@@ -515,7 +479,7 @@ static void cdc_acm_handle_data(USBDevice *dev, USBPacket *p)
         s->rx_head = (s->rx_head + len) % CDC_ACM_RX_SIZE;
         s->rx_count -= len;
         p->actual_length = len;
-        cdc_acm_log_bytes("bulk", "in", out, len);
+        cdc_acm_trace_bytes("bulk", "in", out, len);
         return;
     }
 
@@ -533,11 +497,10 @@ static void cdc_acm_handle_data(USBDevice *dev, USBPacket *p)
         usb_packet_copy(p, notification, sizeof(notification));
         p->actual_length = sizeof(notification);
         s->serial_state_pending = false;
-        cdc_acm_log_bytes("interrupt", "in", notification,
-                          sizeof(notification));
-        cdc_acm_log_state(
-            "serial_state_sent", ",\"dcd\":%u,\"dsr\":%u,\"bits\":%u",
-            !!(s->serial_state & CDC_ACM_RX_CARRIER),
+        cdc_acm_trace_bytes("interrupt", "in", notification,
+                            sizeof(notification));
+        trace_usb_cdc_acm_serial_state(
+            "sent", !!(s->serial_state & CDC_ACM_RX_CARRIER),
             !!(s->serial_state & CDC_ACM_TX_CARRIER), s->serial_state);
         return;
     }
@@ -565,7 +528,7 @@ static void cdc_acm_read(void *opaque, const uint8_t *buf, int size)
         memcpy(s->rx_buf, buf + first, size - first);
     }
     s->rx_count += size;
-    cdc_acm_log_bytes("chardev_rx", "host_to_guest", buf, size);
+    cdc_acm_trace_bytes("chardev_rx", "host_to_guest", buf, size);
     usb_wakeup(s->bulk_in, 0);
     usb_wakeup(s->bulk_in_secondary, 0);
 }
@@ -574,7 +537,7 @@ static void cdc_acm_event(void *opaque, QEMUChrEvent event)
 {
     (void)opaque;
     if (event == CHR_EVENT_BREAK) {
-        cdc_acm_log("chardev_break", "");
+        trace_usb_cdc_acm_event("chardev_break", 0, 0);
     }
 }
 
@@ -595,7 +558,7 @@ static void cdc_acm_realize(USBDevice *dev, Error **errp)
         usb_ep_get(dev, USB_TOKEN_IN, CDC_ACM_EP_SECONDARY_BULK_IN);
     qemu_chr_fe_set_handlers(&s->chr, cdc_acm_can_read, cdc_acm_read,
                              cdc_acm_event, NULL, s, NULL, true);
-    cdc_acm_log("attach", ",\"vid\":4505,\"pid\":26795");
+    trace_usb_cdc_acm_event("attach", 0x1199, 0x68ab);
 }
 
 static const VMStateDescription vmstate_usb_cdc_acm = {
