@@ -2561,14 +2561,11 @@ static void qy8_init(MachineState *machine)
         Chardev *chr = qemu_chr_find(s->tcu_chardev);
         DeviceState *tcu;
 
-        if (!chr) {
-            error_report("clarion-qy8: tcu=on requires chardev '%s'",
-                         s->tcu_chardev);
-            exit(1);
-        }
         tcu = qdev_new("usb-cdc-acm");
         qdev_set_id(tcu, g_strdup("qy8-tcu"), &error_fatal);
-        qdev_prop_set_chr(tcu, "chardev", chr);
+        if (chr) {
+            qdev_prop_set_chr(tcu, "chardev", chr);
+        }
         usb_realize_and_unref(USB_DEVICE(tcu),
                               &SYS_BUS_EHCI(s->ehci)->ehci.bus, &error_fatal);
     }
@@ -3148,9 +3145,10 @@ static void qy8_machine_instance_init(Object *obj)
     s->tcu_auto_reply = false;
     s->tcu_state_reply = -1;
     s->tcu_chardev = g_strdup("tcu");
+    s->tcu_on = true;
     object_property_add_bool(obj, "tcu", qy8_tcu_get, qy8_tcu_set);
     object_property_set_description(obj, "tcu",
-        "attach the optional Sierra CDC ACM TCU modem (default off)");
+        "attach the Sierra CDC ACM TCU modem (default on)");
     object_property_add_str(obj, "tcu-chardev", qy8_tcu_chardev_get,
                             qy8_tcu_chardev_set);
     object_property_set_description(obj, "tcu-chardev",

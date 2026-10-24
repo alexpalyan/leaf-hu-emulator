@@ -49,7 +49,9 @@ static void usage(const char *program)
             "usage: %s [-n] [--read-only] [--headless] "
             "[--dbgprint FILE] NOR [SD] "
             "[QEMU arguments...]\n"
-            "       %s --identify NOR\n",
+            "       %s --identify NOR\n"
+            "QY8 TCU modem is enabled by default; disable with "
+            "-machine tcu=off.\n",
             program, program);
 }
 

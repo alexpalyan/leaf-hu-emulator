@@ -73,16 +73,18 @@ the same command line is merged with the first.
 | `i2c4-recorder` | `off` | transaction recorder on I2C4, address `0x24` |
 | `tma460` | `on` | TMA460 touchscreen controller model on I2C4 (requires `i2c4=on`); on the `g214` board a TMA616 at `0x67` instead |
 | `tma460-profile` | `on` | Synthetic TMA460 register profile with pointer-to-touch input |
-| `tcu` | `off` | Attach the experimental Sierra USB CDC ACM modem model to the EHCI bus |
+| `tcu` | `on` | Attach the Sierra USB CDC ACM modem model to the EHCI bus |
 | `tcu-chardev` | `tcu` | Chardev ID used for modem data when `tcu=on` |
 
 ### TCU modem model
 
-The optional Sierra modem uses VID:PID `1199:68ab` and the observed AR8550
+The Sierra modem uses VID:PID `1199:68ab` and the observed AR8550
 seven-interface configuration. CDC ACM interfaces 3 and 4 expose interrupt
 IN and bulk IN/OUT endpoints; both route data through the configured QEMU
-chardev. Keep the machine convenience property disabled unless an AT peer is
-connected through a QEMU chardev:
+chardev when one is configured. It is enabled by default, matching the TCU's
+presence on the vehicle bus. Without a matching chardev ID, the USB device
+still enumerates, but has no modem peer: AT commands receive no response and
+there is no network connection. Use `tcu=off` to disable the device:
 
 ```sh
 build-release/qemu-system-arm -M clarion-qy8,tcu=on \
@@ -90,8 +92,8 @@ build-release/qemu-system-arm -M clarion-qy8,tcu=on \
     -trace events=/tmp/tcu-trace.events,file=/tmp/tcu-trace.log
 ```
 
-The model is a regular `usb-cdc-acm` USB device on `usb-bus.0`; `tcu=on` is a
-machine convenience switch that creates it on the EHCI bus. With `tcu=off`, a
+The model is a regular `usb-cdc-acm` USB device on `usb-bus.0`; `tcu=on` creates
+it on the EHCI bus. With `tcu=off`, a
 USB device can instead be attached to the same bus through `-device` or QMP.
 For a physical TCU, use `-device usb-host,vendorid=0x1199,productid=0x68ab,bus=usb-bus.0`
 after the host OS has enumerated the device. A paused-QEMU hotplug check added

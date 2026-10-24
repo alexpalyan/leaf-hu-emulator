@@ -459,7 +459,9 @@ static void cdc_acm_handle_data(USBDevice *dev, USBPacket *p)
         usb_packet_copy(p, buf, len);
         p->actual_length = len;
         cdc_acm_trace_bytes("bulk", "out", buf, len);
-        qemu_chr_fe_write_all(&s->chr, buf, len);
+        if (qemu_chr_fe_backend_connected(&s->chr)) {
+            qemu_chr_fe_write_all(&s->chr, buf, len);
+        }
         return;
     }
 
@@ -545,19 +547,18 @@ static void cdc_acm_realize(USBDevice *dev, Error **errp)
 {
     USBCDCACMState *s = USB_CDC_ACM(dev);
 
+    (void)errp;
     usb_desc_init(dev);
-    if (!qemu_chr_fe_backend_connected(&s->chr)) {
-        error_setg(errp, "Property chardev is required");
-        return;
-    }
     s->intr = usb_ep_get(dev, USB_TOKEN_IN, CDC_ACM_EP_INTERRUPT);
     s->intr_secondary =
         usb_ep_get(dev, USB_TOKEN_IN, CDC_ACM_EP_INTERRUPT_SECONDARY);
     s->bulk_in = usb_ep_get(dev, USB_TOKEN_IN, CDC_ACM_EP_BULK_IN);
     s->bulk_in_secondary =
         usb_ep_get(dev, USB_TOKEN_IN, CDC_ACM_EP_SECONDARY_BULK_IN);
-    qemu_chr_fe_set_handlers(&s->chr, cdc_acm_can_read, cdc_acm_read,
-                             cdc_acm_event, NULL, s, NULL, true);
+    if (qemu_chr_fe_backend_connected(&s->chr)) {
+        qemu_chr_fe_set_handlers(&s->chr, cdc_acm_can_read, cdc_acm_read,
+                                 cdc_acm_event, NULL, s, NULL, true);
+    }
     trace_usb_cdc_acm_event("attach", 0x1199, 0x68ab);
 }
 
