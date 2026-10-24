@@ -338,10 +338,10 @@ static void cdc_acm_trace_control(USBPacket *p, int request, int value,
 }
 
 static void cdc_acm_trace_bytes(const char *event, const char *direction,
-                                const uint8_t *data, size_t len)
+                                int endpoint, const uint8_t *data, size_t len)
 {
     char *hex = cdc_acm_hex(data, len);
-    trace_usb_cdc_acm_bytes(event, direction, len, hex);
+    trace_usb_cdc_acm_bytes(event, direction, endpoint, len, hex);
     g_free(hex);
 }
 
@@ -1038,7 +1038,7 @@ static void cdc_acm_handle_data(USBDevice *dev, USBPacket *p)
         }
         usb_packet_copy(p, buf, len);
         p->actual_length = len;
-        cdc_acm_trace_bytes("bulk", "out", buf, len);
+        cdc_acm_trace_bytes("bulk", "out", ep, buf, len);
         if (qemu_chr_fe_backend_connected(&s->chr)) {
             qemu_chr_fe_write_all(&s->chr, buf, len);
         } else if (s->nic) {
@@ -1063,7 +1063,7 @@ static void cdc_acm_handle_data(USBDevice *dev, USBPacket *p)
         s->rx_head = (s->rx_head + len) % CDC_ACM_RX_SIZE;
         s->rx_count -= len;
         p->actual_length = len;
-        cdc_acm_trace_bytes("bulk", "in", out, len);
+        cdc_acm_trace_bytes("bulk", "in", ep, out, len);
         return;
     }
 
@@ -1081,7 +1081,7 @@ static void cdc_acm_handle_data(USBDevice *dev, USBPacket *p)
         usb_packet_copy(p, notification, sizeof(notification));
         p->actual_length = sizeof(notification);
         s->serial_state_pending = false;
-        cdc_acm_trace_bytes("interrupt", "in", notification,
+        cdc_acm_trace_bytes("interrupt", "in", ep, notification,
                             sizeof(notification));
         trace_usb_cdc_acm_serial_state(
             "sent", !!(s->serial_state & CDC_ACM_RX_CARRIER),
@@ -1112,7 +1112,7 @@ static void cdc_acm_read(void *opaque, const uint8_t *buf, int size)
         memcpy(s->rx_buf, buf + first, size - first);
     }
     s->rx_count += size;
-    cdc_acm_trace_bytes("chardev_rx", "host_to_guest", buf, size);
+    cdc_acm_trace_bytes("chardev_rx", "host_to_guest", 0, buf, size);
     usb_wakeup(s->bulk_in, 0);
     usb_wakeup(s->bulk_in_secondary, 0);
 }

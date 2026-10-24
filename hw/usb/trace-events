@@ -368,7 +368,7 @@ usb_cdc_acm_control(int type, int request, int value, int index, int length, int
 usb_cdc_acm_line_coding(const char *operation, uint32_t baud, uint8_t stop_bits, uint8_t parity, uint8_t data_bits) "%s baud %u stop %u parity %u data %u"
 usb_cdc_acm_control_lines(uint8_t dtr, uint8_t rts) "DTR %u RTS %u"
 usb_cdc_acm_serial_state(const char *event, bool dcd, bool dsr, uint16_t state) "%s DCD %u DSR %u bits 0x%x"
-usb_cdc_acm_bytes(const char *event, const char *direction, size_t length, const char *data) "%s %s length %zu data %s"
+usb_cdc_acm_bytes(const char *event, const char *direction, int endpoint, size_t length, const char *data) "%s %s endpoint %d length %zu data %s"
 
 # canokey.c
 canokey_emu_stall_ep(uint8_t ep) "ep %d"
