@@ -51,7 +51,9 @@ static void usage(const char *program)
             "[QEMU arguments...]\n"
             "       %s --identify NOR\n"
             "QY8 TCU modem is enabled by default; disable with "
-            "-machine tcu=off.\n",
+            "-machine tcu=off.\n"
+            "Attach a QEMU user network to the built-in PPP modem with "
+            "-netdev user,id=tcu,restrict=on -machine tcu-netdev=tcu.\n",
             program, program);
 }
 

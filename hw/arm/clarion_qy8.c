@@ -1771,6 +1771,7 @@ struct Qy8MachineState {
     DeviceState *ohci;
     bool tcu_on;
     char *tcu_chardev;
+    char *tcu_netdev;
     DeviceState *sgx;         /* PowerVR SGX @0xFCE00000 */
     DeviceState *g2d;
     DeviceState *shcore;
@@ -2044,6 +2045,21 @@ static void qy8_tcu_chardev_set(Object *obj, const char *value, Error **errp)
 
     g_free(s->tcu_chardev);
     s->tcu_chardev = g_strdup(value);
+}
+
+static char *qy8_tcu_netdev_get(Object *obj, Error **errp)
+{
+    (void)errp;
+    return g_strdup(QY8_MACHINE(obj)->tcu_netdev);
+}
+
+static void qy8_tcu_netdev_set(Object *obj, const char *value, Error **errp)
+{
+    Qy8MachineState *s = QY8_MACHINE(obj);
+
+    (void)errp;
+    g_free(s->tcu_netdev);
+    s->tcu_netdev = g_strdup(value);
 }
 
 static char *qy8_render_get(Object *obj, Error **errp)
@@ -2565,6 +2581,10 @@ static void qy8_init(MachineState *machine)
         qdev_set_id(tcu, g_strdup("qy8-tcu"), &error_fatal);
         if (chr) {
             qdev_prop_set_chr(tcu, "chardev", chr);
+        }
+        if (s->tcu_netdev && s->tcu_netdev[0]) {
+            object_property_set_str(OBJECT(tcu), "netdev", s->tcu_netdev,
+                                   &error_fatal);
         }
         usb_realize_and_unref(USB_DEVICE(tcu),
                               &SYS_BUS_EHCI(s->ehci)->ehci.bus, &error_fatal);
@@ -3145,6 +3165,7 @@ static void qy8_machine_instance_init(Object *obj)
     s->tcu_auto_reply = false;
     s->tcu_state_reply = -1;
     s->tcu_chardev = g_strdup("tcu");
+    s->tcu_netdev = g_strdup("");
     s->tcu_on = true;
     object_property_add_bool(obj, "tcu", qy8_tcu_get, qy8_tcu_set);
     object_property_set_description(obj, "tcu",
@@ -3153,6 +3174,10 @@ static void qy8_machine_instance_init(Object *obj)
                             qy8_tcu_chardev_set);
     object_property_set_description(obj, "tcu-chardev",
         "chardev backend for the optional TCU modem (default: tcu)");
+    object_property_add_str(obj, "tcu-netdev", qy8_tcu_netdev_get,
+                            qy8_tcu_netdev_set);
+    object_property_set_description(obj, "tcu-netdev",
+        "network backend for the built-in TCU modem (default: none)");
     object_property_add_str(obj, "render", qy8_render_get, qy8_render_set);
     object_property_set_description(obj, "render",
         "render backend: cpu, angle, or off");

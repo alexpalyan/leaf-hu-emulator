@@ -75,6 +75,7 @@ the same command line is merged with the first.
 | `tma460-profile` | `on` | Synthetic TMA460 register profile with pointer-to-touch input |
 | `tcu` | `on` | Attach the Sierra USB CDC ACM modem model to the EHCI bus |
 | `tcu-chardev` | `tcu` | Chardev ID used for modem data when `tcu=on` |
+| `tcu-netdev` | unset | QEMU network backend for the built-in modem and PPP adapter |
 
 ### TCU modem model
 
@@ -82,15 +83,34 @@ The Sierra modem uses VID:PID `1199:68ab` and the observed AR8550
 seven-interface configuration. CDC ACM interfaces 3 and 4 expose interrupt
 IN and bulk IN/OUT endpoints; both route data through the configured QEMU
 chardev when one is configured. It is enabled by default, matching the TCU's
-presence on the vehicle bus. Without a matching chardev ID, the USB device
-still enumerates, but has no modem peer: AT commands receive no response and
-there is no network connection. Use `tcu=off` to disable the device:
+presence on the vehicle bus. Without a matching chardev ID or `tcu-netdev`,
+the USB device still enumerates, but AT commands receive no response. Use
+`tcu=off` to disable the device. The built-in AT
+modem and PPP adapter are enabled only when `tcu-netdev` names a QEMU network
+backend and no chardev is connected. For an isolated QEMU user network:
 
 ```sh
-build-release/qemu-system-arm -M clarion-qy8,tcu=on \
-    -chardev socket,id=tcu,path=/tmp/qy8-tcu.sock,server=on,wait=off \
+build-release/qemu-system-arm \
+    -netdev user,id=tcu,restrict=on \
+    -M clarion-qy8,tcu=on,tcu-netdev=tcu \
+    -object filter-dump,id=tcu-dump,netdev=tcu,file=/tmp/tcu.pcap \
     -trace events=/tmp/tcu-trace.events,file=/tmp/tcu-trace.log
 ```
+
+The modem answers the observed AT setup and `ATD*99***1#`, then negotiates
+PPP LCP/IPCP. IPCP uses the QEMU user-network guest address `10.0.2.15` and DNS
+server `10.0.2.3`. PPP IP packets are passed through a QEMU NIC attached to
+that backend; the modem model does not implement its own IP stack. `restrict=on`
+keeps the QEMU user network from forwarding guest traffic outside QEMU. Use
+`restrict=off` only when the owner explicitly authorizes guest network egress.
+QEMU documents that `restrict=on` still permits explicitly configured
+forwarding rules. Do not add `guestfwd` unless the owner authorizes a local
+service connection. For example, with a TCP service listening on host loopback
+port 1234, an owner-approved opt-in rule would be
+`-netdev user,id=tcu,restrict=on,guestfwd=tcp:10.0.2.100:1234-tcp:127.0.0.1:1234`.
+Both `restrict=off` and `guestfwd` are disabled by default. See the
+[QEMU user networking documentation](https://www.qemu.org/docs/master/system/qemu-manpage.html)
+for `restrict` and `guestfwd` behavior.
 
 The model is a regular `usb-cdc-acm` USB device on `usb-bus.0`; `tcu=on` creates
 it on the EHCI bus. With `tcu=off`, a
@@ -101,8 +121,11 @@ and removed `usb-serial` on `usb-bus.0`; this verifies the QEMU bus path, but
 does not exercise libusb or a physical TCU. The guest was not rebooted during
 that bus check.
 
-The host connects to the socket as a client. Bytes from CDC bulk OUT are sent
-to the chardev; bytes received from the chardev are delivered through bulk IN.
+When a chardev is configured, the host connects to its socket as a client.
+Bytes from CDC bulk OUT are sent to the chardev; bytes received from the
+chardev are delivered through bulk IN. When `tcu-netdev` is set without a
+chardev, the built-in AT/PPP peer handles modem data and passes negotiated IP
+packets to the configured QEMU NIC.
 Trace events record control transfers, line coding, DTR/RTS, break, bulk data,
 and CDC SERIAL_STATE changes. The event file can enable the `usb_cdc_acm_*`
 events listed in `hw/usb/trace-events`. Convert those trace lines to JSONL
