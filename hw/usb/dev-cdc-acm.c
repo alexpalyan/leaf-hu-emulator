@@ -79,6 +79,10 @@ struct USBCDCACMState {
     bool lcp_our_acked;
     bool ipcp_peer_acked;
     bool ipcp_our_acked;
+    bool ipcp_request_sent;
+    bool ipcp_address_requested;
+    uint8_t ipcp_id;
+    uint32_t ipcp_address;
     bool peer_pfc;
     bool peer_acfc;
     uint8_t at_buf[128];
@@ -440,14 +444,21 @@ static void cdc_acm_ppp_control(USBCDCACMState *s, uint16_t protocol,
 
 static void cdc_acm_ppp_start_ipcp(USBCDCACMState *s)
 {
-    uint8_t options[] = {
-        3, 6, 10, 0, 2, 2, 129, 6, 10, 0, 2, 3, 131, 6, 10, 0, 2, 3,
-    };
+    uint8_t options[] = { 3, 6, 10, 0, 2, 2 };
+    size_t options_len = 0;
 
-    if (s->lcp_peer_acked && s->lcp_our_acked && !s->ipcp_our_acked) {
-        cdc_acm_ppp_control(s, CDC_ACM_PPP_IPCP, 1, 2, options,
-                            sizeof(options));
+    if (!s->lcp_peer_acked || !s->lcp_our_acked || s->ipcp_request_sent ||
+        s->ipcp_our_acked) {
+        return;
     }
+    if (s->ipcp_address_requested) {
+        stl_be_p(options + 2, s->ipcp_address);
+        options_len = sizeof(options);
+    }
+    s->ipcp_id++;
+    s->ipcp_request_sent = true;
+    cdc_acm_ppp_control(s, CDC_ACM_PPP_IPCP, 1, s->ipcp_id, options,
+                        options_len);
 }
 
 static void cdc_acm_ppp_lcp_request(USBCDCACMState *s)
@@ -572,11 +583,38 @@ static void cdc_acm_ppp_ipcp(USBCDCACMState *s, const uint8_t *packet,
             s->ipcp_peer_acked = !nak;
         }
         cdc_acm_ppp_start_ipcp(s);
-    } else if (packet[0] == 2 && packet[1] == 2) {
+    } else if (packet[0] == 2 && s->ipcp_request_sent &&
+               packet[1] == s->ipcp_id) {
         s->ipcp_our_acked = true;
-    } else if (packet[0] == 4) {
-        cdc_acm_ppp_control(s, CDC_ACM_PPP_IPCP, 5, packet[1], packet + 4,
-                            declared - 4);
+    } else if ((packet[0] == 3 || packet[0] == 4) &&
+               s->ipcp_request_sent && packet[1] == s->ipcp_id) {
+        offset = 4;
+        while (offset < declared) {
+            uint8_t option_len;
+
+            if (offset + 2 > declared) {
+                return;
+            }
+            option_len = packet[offset + 1];
+            if (option_len < 2 || offset + option_len > declared) {
+                return;
+            }
+            if (packet[0] == 4) {
+                if (option_len == 6 && packet[offset] == 3 &&
+                    s->ipcp_address_requested &&
+                    ldl_be_p(packet + offset + 2) == s->ipcp_address) {
+                    s->ipcp_address_requested = false;
+                }
+            } else if (option_len == 6 && packet[offset] == 3) {
+                s->ipcp_address = ldl_be_p(packet + offset + 2);
+            }
+            offset += option_len;
+        }
+        if (offset != declared) {
+            return;
+        }
+        s->ipcp_request_sent = false;
+        cdc_acm_ppp_start_ipcp(s);
     }
 }
 
@@ -753,6 +791,10 @@ static void cdc_acm_modem_command(USBCDCACMState *s)
         s->lcp_our_acked = false;
         s->ipcp_peer_acked = false;
         s->ipcp_our_acked = false;
+        s->ipcp_request_sent = false;
+        s->ipcp_address_requested = true;
+        s->ipcp_id = 0;
+        s->ipcp_address = CDC_ACM_PPP_GATEWAY_IP;
         s->peer_pfc = false;
         s->peer_acfc = false;
         s->pending_ip_len = 0;
@@ -881,6 +923,10 @@ static void cdc_acm_reset(USBDevice *dev)
     s->lcp_our_acked = false;
     s->ipcp_peer_acked = false;
     s->ipcp_our_acked = false;
+    s->ipcp_request_sent = false;
+    s->ipcp_address_requested = true;
+    s->ipcp_id = 0;
+    s->ipcp_address = CDC_ACM_PPP_GATEWAY_IP;
     s->peer_pfc = false;
     s->peer_acfc = false;
     s->at_len = 0;
