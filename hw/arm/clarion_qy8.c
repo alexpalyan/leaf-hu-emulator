@@ -252,6 +252,9 @@ static int qy8_scif_chr_index(int scif)
 #define BCTL_ST_PWR         0x0080
 #define BCTL_ST_BOOT        0x0400
 
+/* GPIO.dll EVT_GPIO_AUDIO_M reads BCTL DIPSW bit 10 as GPIO port 10. */
+#define BCTL_DIPSW_AUDIO_M  0x0400
+
 /*
  * Vehicle inputs in the same word, from GPIO.dll's register reader (QY8202NA
  * @0xEF6F31E0, QY8652NB @0xEF6C3204):
@@ -1807,6 +1810,7 @@ struct Qy8MachineState {
     const Qy8BoardProperties *board_properties; /* resolved in qy8_init() */
     bool reverse;               /* RV input, machine property */
     bool ignition;              /* IGN input, machine property */
+    bool gpio_port10;           /* GPIO.dll input, BCTL DIPSW bit 10 */
     bool g2d_on;
     bool shcore_on;
     bool shcore_init_only;
@@ -2026,6 +2030,21 @@ static void qy8_ignition_set(Object *obj, bool value, Error **errp)
 
     s->ignition = value;
     qy8_bctl_set_inputs(s);
+}
+
+static bool qy8_gpio_port10_get(Object *obj, Error **errp)
+{
+    return QY8_MACHINE(obj)->gpio_port10;
+}
+
+static void qy8_gpio_port10_set(Object *obj, bool value, Error **errp)
+{
+    Qy8MachineState *s = QY8_MACHINE(obj);
+    uint16_t *dipsw = &s->bctl.reg[BCTL_DIPSW >> 1];
+
+    s->gpio_port10 = value;
+    *dipsw = (*dipsw & ~BCTL_DIPSW_AUDIO_M) |
+             (value ? BCTL_DIPSW_AUDIO_M : 0);
 }
 
 static bool qy8_reverse_get(Object *obj, Error **errp)
@@ -3265,6 +3284,11 @@ static void qy8_machine_instance_init(Object *obj)
                              qy8_ignition_set);
     object_property_set_description(obj, "ignition",
                                     "ignition input (IGN), off by default");
+
+    object_property_add_bool(obj, "gpio-port10", qy8_gpio_port10_get,
+                             qy8_gpio_port10_set);
+    object_property_set_description(obj, "gpio-port10",
+        "GPIO.dll port 10 input (EVT_GPIO_AUDIO_M, BCTL DIPSW bit 10)");
 
     s->board = g_strdup("auto");
     object_property_add_str(obj, "board", qy8_board_get, qy8_board_set);
