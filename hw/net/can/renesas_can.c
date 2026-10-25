@@ -110,7 +110,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(RenesasCANState, RENESAS_CAN)
 #define CTL_MSSR        CTL_OFF(0x852)
 #define CTL_IER         CTL_OFF(0x860)
 #define CTL_ISR         CTL_OFF(0x861)
-/* CAN.dll scans mailbox MCTL state; no ISR read appears in that path. */
+/* CAN.dll uses ISR bit 0 for TX completion and bit 1 for RX. */
+#define ISR_TX          0x01
 #define ISR_RX          0x02
 #define MKR_MIER1       0x2c    /* interrupt enable, mailboxes 32..63     */
 #define MKR_MIER0       0x3c    /* mailboxes 0..31                        */
@@ -413,17 +414,23 @@ static uint8_t can_isr(RenesasCANState *s)
 {
     uint32_t mier0 = can_ld(&s->mkr[MKR_MIER0], 4);
     uint32_t mier1 = can_ld(&s->mkr[MKR_MIER1], 4);
+    uint8_t isr = 0;
     int i;
 
     for (i = 0; i < 64; i++) {
         bool en = i < 32 ? mier0 & BIT(i) : mier1 & BIT(i - 32);
+        uint8_t ctl = s->ctl[i];
 
-        if (en && (s->ctl[i] & (MCTL_RECREQ | MCTL_DATA)) ==
-                  (MCTL_RECREQ | MCTL_DATA)) {
-            return ISR_RX;
+        if (!en || !(ctl & MCTL_DATA)) {
+            continue;
+        }
+        if (ctl & MCTL_RECREQ) {
+            isr |= ISR_RX;
+        } else {
+            isr |= ISR_TX;
         }
     }
-    return 0;
+    return isr;
 }
 
 static void can_update_irq(RenesasCANState *s)
