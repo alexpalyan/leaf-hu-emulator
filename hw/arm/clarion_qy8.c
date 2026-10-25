@@ -1806,6 +1806,7 @@ struct Qy8MachineState {
     char *board;                /* property value: "auto", "g214" or "g218" */
     const Qy8BoardProperties *board_properties; /* resolved in qy8_init() */
     bool reverse;               /* RV input, machine property */
+    bool ignition;              /* IGN input, machine property */
     bool g2d_on;
     bool shcore_on;
     bool shcore_init_only;
@@ -1999,15 +2000,32 @@ static bool qy8_has_tma616(Qy8MachineState *s)
     return s->board_properties && s->board_properties->tma616;
 }
 
-/* Parking brake on, lights off; reverse as the property says */
+/* Parking brake on, lights off; IGN and reverse follow machine properties */
 static void qy8_bctl_set_inputs(Qy8MachineState *s)
 {
     uint16_t *st = &s->bctl.reg[BCTL_STATUS >> 1];
 
-    *st = (*st & ~(BCTL_ST_PKB | BCTL_ST_RV)) | BCTL_ST_ILL;
+    *st = (*st & ~(BCTL_ST_PKB | BCTL_ST_RV | BCTL_ST_PWR)) | BCTL_ST_ILL;
+    if (!s->ignition) {
+        *st |= BCTL_ST_PWR;
+    }
     if (!s->reverse) {
         *st |= BCTL_ST_RV;
     }
+}
+
+static bool qy8_ignition_get(Object *obj, Error **errp)
+{
+    return QY8_MACHINE(obj)->ignition;
+}
+
+/* GPIO.dll polls the active-low BCTL IGN bit. */
+static void qy8_ignition_set(Object *obj, bool value, Error **errp)
+{
+    Qy8MachineState *s = QY8_MACHINE(obj);
+
+    s->ignition = value;
+    qy8_bctl_set_inputs(s);
 }
 
 static bool qy8_reverse_get(Object *obj, Error **errp)
@@ -3242,6 +3260,11 @@ static void qy8_machine_instance_init(Object *obj)
                              qy8_reverse_set);
     object_property_set_description(obj, "reverse",
         "reverse gear input (RV), off by default");
+
+    object_property_add_bool(obj, "ignition", qy8_ignition_get,
+                             qy8_ignition_set);
+    object_property_set_description(obj, "ignition",
+                                    "ignition input (IGN), off by default");
 
     s->board = g_strdup("auto");
     object_property_add_str(obj, "board", qy8_board_get, qy8_board_set);
