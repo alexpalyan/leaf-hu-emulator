@@ -2799,6 +2799,32 @@ static void skip_service_call(const Qy8RenderExport *function, Pending *call,
     qemu_plugin_set_pc(link_register);
 }
 
+static void skip_gdisubgl_draw_arrays(const Qy8RenderExport *function,
+                                      Pending *call, uint32_t link_register,
+                                      uint32_t process)
+{
+    /* Temporary T276 experiment: skip only AuiApp's GdiSubGL draw call. */
+    uint64_t count = ++service_draw_calls;
+    GString *event = g_string_new(NULL);
+
+    g_string_append_printf(
+        event,
+        "{\"seq\":\"%" PRIu64
+        "\",\"kind\":\"service_skip_gdisubgl\",\"function\":",
+        next_seq++);
+    json_quote(event, function->name);
+    g_string_append_printf(
+        event,
+        ",\"call\":\"%" PRIu64 "\",\"call_id\":\"%" PRIu64
+        "\",\"lr\":\"0x%08x\",\"lr_module\":\"GdiSubGL.dll\","
+        "\"process\":\"0x%08x\"}",
+        count, call->id, link_register, process);
+    emit(event);
+    g_string_free(event, TRUE);
+    g_free(call);
+    qemu_plugin_set_pc(link_register);
+}
+
 static void process_entry(unsigned int cpu, const Qy8RenderExport *function)
 {
     uint32_t registers[4] = { 0 };
@@ -2831,11 +2857,16 @@ static void process_entry(unsigned int cpu, const Qy8RenderExport *function)
     gboolean process_is_aui =
         service_target && current_process_is_aui(&current_process);
     gboolean caller_is_aui = !strcmp(module, "auirtdll.dll");
-    if (service_target && (!caller_is_aui || !process_is_aui)) {
+    gboolean temporary_gdisubgl_skip =
+        service_target && process_is_aui &&
+        !strcmp(function->name, "glDrawArrays") &&
+        !strcmp(module, "GdiSubGL.dll");
+    if (service_target && (!caller_is_aui || !process_is_aui) &&
+        !temporary_gdisubgl_skip) {
         emit_service_foreign(function->name, module, link_register,
                              current_process, current_process != 0);
     }
-    if (!caller_is_aui) {
+    if (!caller_is_aui && !temporary_gdisubgl_skip) {
         emit_foreign_entry(function, module, link_register);
         return;
     }
@@ -2858,6 +2889,11 @@ static void process_entry(unsigned int cpu, const Qy8RenderExport *function)
     update_live_state(function, call);
     if (service_target && caller_is_aui && process_is_aui) {
         skip_service_call(function, call, link_register);
+        return;
+    }
+    if (temporary_gdisubgl_skip) {
+        skip_gdisubgl_draw_arrays(function, call, link_register,
+                                  current_process);
         return;
     }
     g_ptr_array_add(pending, call);

@@ -161,7 +161,7 @@ static gboolean find_romhdr(uint32_t *romhdr, GPtrArray *modules)
 {
     for (uint32_t base = 0x80000000; base < 0x90000000; base += 0x10000) {
         uint32_t signature, candidate, count;
-        Qy8RenderModule *egl, *gles, *aui;
+        Qy8RenderModule *egl, *gles, *aui, *gdisubgl;
 
         if (!read_guest_u32((uint64_t)base + 0x40, &signature) ||
             signature != 0x43454345 ||
@@ -173,16 +173,21 @@ static gboolean find_romhdr(uint32_t *romhdr, GPtrArray *modules)
         egl = find_module(candidate, "libEGL.dll");
         gles = find_module(candidate, "libGLESv2.dll");
         aui = find_module(candidate, "auirtdll.dll");
+        gdisubgl = find_module(candidate, "GdiSubGL.dll");
         if (egl && gles && aui) {
             *romhdr = candidate;
             g_ptr_array_add(modules, egl);
             g_ptr_array_add(modules, gles);
             g_ptr_array_add(modules, aui);
+            if (gdisubgl) {
+                g_ptr_array_add(modules, gdisubgl);
+            }
             return TRUE;
         }
         g_free(egl);
         g_free(gles);
         g_free(aui);
+        g_free(gdisubgl);
     }
     return FALSE;
 }
