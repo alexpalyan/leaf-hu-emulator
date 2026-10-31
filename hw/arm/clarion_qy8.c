@@ -25,6 +25,7 @@
 #include "qemu/osdep.h"
 #include <math.h>
 #include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "qemu/error-report.h"
 #include "qemu/units.h"
 #include "qemu/log.h"
@@ -1812,6 +1813,7 @@ struct Qy8MachineState {
     char *can_log_path;
     char *can_replay_path;
     bool tcu_auto_reply;
+    int tcu_state_reply;
 
     MemoryRegion flash;          /* only when flash is provided as ROM */
     DriveInfo *flash_drive;      /* -drive if=pflash: writable copy */
@@ -2667,6 +2669,8 @@ static void qy8_init(MachineState *machine)
         s->can = qdev_new(TYPE_RENESAS_CAN);
         object_property_set_bool(OBJECT(s->can), "tcu-auto-reply",
                                  s->tcu_auto_reply, &error_fatal);
+        object_property_set_int(OBJECT(s->can), "tcu-state-reply",
+                                s->tcu_state_reply, &error_fatal);
         if (*s->can_log_path) {
             object_property_set_str(OBJECT(s->can), "can-log",
                                     s->can_log_path, &error_fatal);
@@ -2945,6 +2949,36 @@ static void qy8_tcu_auto_reply_set(Object *obj, bool value, Error **errp)
     }
 }
 
+static void qy8_tcu_state_reply_get(Object *obj, Visitor *v,
+                                    const char *name, void *opaque,
+                                    Error **errp)
+{
+    int64_t value = QY8_MACHINE(obj)->tcu_state_reply;
+
+    visit_type_int(v, name, &value, errp);
+}
+
+static void qy8_tcu_state_reply_set(Object *obj, Visitor *v,
+                                    const char *name, void *opaque,
+                                    Error **errp)
+{
+    Qy8MachineState *s = QY8_MACHINE(obj);
+    int64_t value;
+
+    if (!visit_type_int(v, name, &value, errp)) {
+        return;
+    }
+    if (value < -1 || value > UINT8_MAX) {
+        error_setg(errp, "QY8: tcu-state-reply must be -1..255");
+        return;
+    }
+    s->tcu_state_reply = (int)value;
+    if (s->can) {
+        object_property_set_int(OBJECT(s->can), "tcu-state-reply", value,
+                                errp);
+    }
+}
+
 static bool qy8_micom_get(Object *obj, Error **errp)
 {
     return QY8_MACHINE(obj)->micom_on;
@@ -3069,6 +3103,7 @@ static void qy8_machine_instance_init(Object *obj)
     s->can_log_path = g_strdup("");
     s->can_replay_path = g_strdup("");
     s->tcu_auto_reply = false;
+    s->tcu_state_reply = -1;
     object_property_add_str(obj, "render", qy8_render_get, qy8_render_set);
     object_property_set_description(obj, "render",
         "render backend: cpu, angle, or off");
@@ -3098,6 +3133,11 @@ static void qy8_machine_instance_init(Object *obj)
                              qy8_tcu_auto_reply_set);
     object_property_set_description(obj, "tcu-auto-reply",
         "enable the virtual-time QY8 TCU response policy (default off)");
+    object_property_add(obj, "tcu-state-reply", "int",
+                        qy8_tcu_state_reply_get, qy8_tcu_state_reply_set,
+                        NULL, NULL);
+    object_property_set_description(obj, "tcu-state-reply",
+        "return a configured TCU state for HU ReadTcuState; -1 disables it");
     object_property_add_str(obj, "can-replay", NULL, qy8_can_replay_set);
     object_property_set_description(obj, "can-replay",
         "replay period_ms ID#DATA lines from this file");
