@@ -87,6 +87,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(RenesasCANState, RENESAS_CAN)
 #define CAN_MKR_SIZE    0x040
 #define CAN_CTL_BASE    0x800   /* MCTL[64] and control registers         */
 #define CAN_CTL_SIZE    0x100
+#define CAN_TCU_AUTO_REPLY_GAP_MS 5
 
 #define CAN_CTLR        0x840   /* Control Register, 16 bits              */
 #define CAN_STR         0x842   /* Status Register, 16 bits, read-only    */
@@ -155,6 +156,7 @@ typedef struct CanRxSeqFrame {
 
 typedef struct CanAutoReply {
     int64_t deadline_ms;
+    uint64_t enqueue_order;
     uint32_t id;
     bool ext;
     uint8_t dlc;
@@ -198,6 +200,7 @@ struct RenesasCANState {
     uint8_t tcu_next_sequence;
     QEMUTimer *tcu_auto_reply_timer;
     GQueue tcu_auto_replies;
+    uint64_t tcu_auto_reply_next_order;
     uint16_t hu_message_length;
     uint16_t hu_message_received;
     uint8_t hu_message_marker;
@@ -676,6 +679,28 @@ static void can_tcu_auto_reply_free(CanAutoReply *reply)
     g_free(reply);
 }
 
+static gint can_tcu_auto_reply_compare(gconstpointer a, gconstpointer b,
+                                       gpointer opaque)
+{
+    const CanAutoReply *reply_a = a;
+    const CanAutoReply *reply_b = b;
+
+    (void)opaque;
+    if (reply_a->deadline_ms < reply_b->deadline_ms) {
+        return -1;
+    }
+    if (reply_a->deadline_ms > reply_b->deadline_ms) {
+        return 1;
+    }
+    if (reply_a->enqueue_order < reply_b->enqueue_order) {
+        return -1;
+    }
+    if (reply_a->enqueue_order > reply_b->enqueue_order) {
+        return 1;
+    }
+    return 0;
+}
+
 static void can_tcu_auto_reply_tick(void *opaque)
 {
     RenesasCANState *s = opaque;
@@ -697,7 +722,9 @@ static void can_tcu_auto_reply_tick(void *opaque)
     can_tcu_auto_reply_free(reply);
     reply = g_queue_peek_head(&s->tcu_auto_replies);
     if (reply) {
-        timer_mod(s->tcu_auto_reply_timer, reply->deadline_ms);
+        timer_mod(s->tcu_auto_reply_timer,
+                  MAX(reply->deadline_ms,
+                      now + CAN_TCU_AUTO_REPLY_GAP_MS));
     }
 }
 
@@ -708,16 +735,18 @@ static void can_tcu_auto_reply_queue_delay(RenesasCANState *s,
 {
     CanAutoReply *reply = g_new0(CanAutoReply, 1);
     int64_t now = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
-    bool was_empty = g_queue_is_empty(&s->tcu_auto_replies);
+    CanAutoReply *old_head = g_queue_peek_head(&s->tcu_auto_replies);
     char hex[2 * 8 + 1];
     int i;
 
     reply->deadline_ms = now + delay_ms;
+    reply->enqueue_order = s->tcu_auto_reply_next_order++;
     reply->id = 0x6ac;
     reply->dlc = dlc;
     memcpy(reply->data, data, dlc);
     reply->trigger = g_strdup(trigger);
-    g_queue_push_tail(&s->tcu_auto_replies, reply);
+    g_queue_insert_sorted(&s->tcu_auto_replies, reply,
+                          can_tcu_auto_reply_compare, NULL);
 
     for (i = 0; i < dlc; i++) {
         snprintf(hex + 2 * i, 3, "%02x", data[i]);
@@ -727,8 +756,10 @@ static void can_tcu_auto_reply_queue_delay(RenesasCANState *s,
             "event=tcu-auto-scheduled source=tcu-auto-reply trigger=%s"
             " delay_ms=%" PRId64 " response_id=0x000006ac response=%s",
             trigger, delay_ms, hex);
-    if (was_empty) {
-        timer_mod(s->tcu_auto_reply_timer, reply->deadline_ms);
+    if (g_queue_peek_head(&s->tcu_auto_replies) != old_head) {
+        CanAutoReply *head = g_queue_peek_head(&s->tcu_auto_replies);
+
+        timer_mod(s->tcu_auto_reply_timer, head->deadline_ms);
     }
 }
 
@@ -1081,6 +1112,7 @@ static void can_init(Object *obj)
     s->tcu_auto_reply_timer =
         timer_new_ms(QEMU_CLOCK_VIRTUAL, can_tcu_auto_reply_tick, s);
     s->tcu_state_reply = -1;
+    s->tcu_auto_reply_next_order = 0;
     g_queue_init(&s->tcu_auto_replies);
     object_property_add_str(obj, "rx", can_rx_get, can_rx_set);
     object_property_add_str(obj, "rx-seq", NULL, can_rx_seq_set);
