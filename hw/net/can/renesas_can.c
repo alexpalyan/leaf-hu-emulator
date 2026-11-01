@@ -206,6 +206,11 @@ struct RenesasCANState {
     uint16_t hu_message_received;
     uint8_t hu_message_marker;
     uint8_t hu_next_sequence;
+    uint8_t tcu_response_stage;
+    uint8_t tcu_last_hu_ack_marker;
+    uint8_t tcu_version_marker;
+    uint8_t tcu_id_marker;
+    bool tcu_id_info_pending;
 };
 
 static void can_log(RenesasCANState *s, const char *fmt, ...)
@@ -807,6 +812,44 @@ static void can_tcu_auto_reply_tx(RenesasCANState *s, uint32_t id, bool ext,
 
         if (length > 0 && length <= dlc - 1) {
             can_tcu_auto_reply_ack(s, data[1], "HU-single-frame");
+            if (length >= 3 && data[2] == 0x00 && data[3] == 0x21 &&
+                data[1] == 0x00 && s->tcu_response_stage == 0) {
+                uint8_t selector[8] = { 0x03, 0x00, 0x00, 0x20,
+                                        0x00, 0x00, 0x00, 0x00 };
+
+                can_tcu_auto_reply_queue_delay(s, "HU-selector-request",
+                                               sizeof(selector), selector, 10);
+                s->tcu_response_stage = 1;
+            } else if (length >= 3 && data[2] == 0x00 && data[3] == 0x2c) {
+                uint8_t commid[8] = { 0x03, data[1], 0x00, 0x2c,
+                                      0x00, 0x00, 0x00, 0x00 };
+                uint8_t empty[8] = { 0x03, (uint8_t)(data[1] + 0x10),
+                                     0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+                uint8_t function_11[8] = { 0x06, 0x30, 0x02, 0x2c,
+                                           0x00, 0x00, 0x00, 0x00 };
+                uint8_t function_10[8] = { 0x06, 0x40, 0x02, 0x0c,
+                                           0x00, 0x00, 0x00, 0x00 };
+
+                can_tcu_auto_reply_queue_delay(s, "HU-ComMid-request",
+                                               sizeof(commid), commid, 8);
+                can_tcu_auto_reply_queue_delay(s, "HU-ComMid-empty-record",
+                                               sizeof(empty), empty, 24);
+                can_tcu_auto_reply_queue_delay(s, "HU-ComMid-0x11-op-c",
+                                               sizeof(function_11),
+                                               function_11, 40);
+                can_tcu_auto_reply_queue_delay(s, "HU-ComMid-0x10-op-c",
+                                               sizeof(function_10),
+                                               function_10, 56);
+                s->tcu_response_stage = 4;
+            } else if (length >= 3 && data[2] == 0x02 && data[3] == 0x21) {
+                uint8_t version[8] = { 0x06, data[1], 0x02, 0x2c,
+                                       0x01, 0x00, 0x00, 0x00 };
+
+                can_tcu_auto_reply_queue_delay(s, "HU-software-version",
+                                               sizeof(version), version, 12);
+                s->tcu_version_marker = data[1];
+                s->tcu_response_stage = 5;
+            }
             if (s->tcu_state_reply >= 0 && length >= 3 &&
                 data[2] == 0x20 && data[3] == 0x61) {
                 uint8_t state_reply[8] = {
@@ -821,7 +864,52 @@ static void can_tcu_auto_reply_tx(RenesasCANState *s, uint32_t id, bool ext,
             }
         }
     } else if (pci == 0xe && dlc >= 2) {
-        s->tcu_next_sequence = (((data[1] >> 4) + 1) & 0x0f);
+        uint8_t marker = data[1];
+
+        s->tcu_next_sequence = (((marker >> 4) + 1) & 0x0f);
+        s->tcu_last_hu_ack_marker = marker;
+        if (s->tcu_response_stage == 5 &&
+            marker == s->tcu_version_marker) {
+            s->tcu_id_marker = (marker + 0x10) & 0x70;
+            uint8_t id[8] = { 0x06, s->tcu_id_marker, 0x44, 0x8d,
+                              0x01, 0x01, 0x00, 0x00 };
+
+            can_tcu_auto_reply_queue_delay(s, "HU-ID-0x224-op-d-ACK",
+                                           sizeof(id), id, 8);
+            s->tcu_response_stage = 6;
+        } else if (s->tcu_response_stage == 6 &&
+                   marker == s->tcu_id_marker) {
+            uint8_t first[8] = { 0x10, 0x24,
+                                 (uint8_t)((marker + 0x10) & 0x70),
+                                 0x46, 0x6c, 0x00, 0x41, 0x41 };
+
+            can_tcu_auto_reply_queue_delay(s, "HU-ID_INFO-request",
+                                           sizeof(first), first, 8);
+            s->tcu_id_info_pending = true;
+            s->tcu_response_stage = 7;
+        }
+    } else if (pci == 3 && dlc >= 3 && s->tcu_id_info_pending) {
+        uint8_t cf1[8] = { 0x21, 0x41, 0x41, 0x41,
+                           0x41, 0x41, 0x41, 0x41 };
+        uint8_t cf2[8] = { 0x22, 0x41, 0x41, 0x41,
+                           0x41, 0x41, 0x41, 0x41 };
+        uint8_t cf3[8] = { 0x23, 0x41, 0x41, 0x41,
+                           0x41, 0x41, 0x41, 0x41 };
+        uint8_t cf4[8] = { 0x24, 0x41, 0x41, 0x41,
+                           0x41, 0x41, 0x41, 0x41 };
+        uint8_t cf5[3] = { 0x25, 0x41, 0x41 };
+
+        can_tcu_auto_reply_queue_delay(s, "HU-ID_INFO-flow-control",
+                                       sizeof(cf1), cf1, 2);
+        can_tcu_auto_reply_queue_delay(s, "HU-ID_INFO-consecutive-frame",
+                                       sizeof(cf2), cf2, 4);
+        can_tcu_auto_reply_queue_delay(s, "HU-ID_INFO-consecutive-frame",
+                                       sizeof(cf3), cf3, 6);
+        can_tcu_auto_reply_queue_delay(s, "HU-ID_INFO-consecutive-frame",
+                                       sizeof(cf4), cf4, 8);
+        can_tcu_auto_reply_queue_delay(s, "HU-ID_INFO-final-frame",
+                                       sizeof(cf5), cf5, 10);
+        s->tcu_id_info_pending = false;
     } else if (pci == 1 && dlc == 8) {
         uint16_t length = ((data[0] & 0x0f) << 8) | data[1];
 

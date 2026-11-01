@@ -2068,7 +2068,13 @@ static bool qy8_tcu_get(Object *obj, Error **errp)
 
 static void qy8_tcu_set(Object *obj, bool value, Error **errp)
 {
-    QY8_MACHINE(obj)->tcu_on = value;
+    Qy8MachineState *s = QY8_MACHINE(obj);
+
+    s->tcu_on = value;
+    s->tcu_auto_reply = value;
+    s->tcu_state_reply = value ? 1 : -1;
+    s->ignition = value;
+    s->gpio_port10 = value;
 }
 
 static char *qy8_tcu_chardev_get(Object *obj, Error **errp)
@@ -2580,7 +2586,8 @@ static void qy8_init(MachineState *machine)
     /* --- board controller: DIPSW and standby exit enable --- */
     s->bctl.reg[BCTL_STATUS >> 1] = BCTL_ST_PWR | BCTL_ST_BOOT;
     qy8_bctl_set_inputs(s);
-    s->bctl.reg[BCTL_DIPSW >> 1] = s->dipsw & 7;
+    s->bctl.reg[BCTL_DIPSW >> 1] = (s->dipsw & 7) |
+        (s->gpio_port10 ? BCTL_DIPSW_AUDIO_M : 0);
     memory_region_init_io(&s->bctl.mr, NULL, &qy8_bctl_ops, &s->bctl,
                           "qy8.bctl", QY8_BCTL_SIZE);
     /* Overrides the sram1 window because the board uses the same CS. */
@@ -3199,8 +3206,10 @@ static void qy8_machine_instance_init(Object *obj)
     s->render_dump_dir = g_strdup("");
     s->can_log_path = g_strdup("");
     s->can_replay_path = g_strdup("");
-    s->tcu_auto_reply = false;
-    s->tcu_state_reply = -1;
+    s->tcu_auto_reply = true;
+    s->tcu_state_reply = 1;
+    s->ignition = true;
+    s->gpio_port10 = true;
     s->tcu_chardev = g_strdup("tcu");
     s->tcu_netdev = g_strdup("");
     s->tcu_on = true;
@@ -3283,7 +3292,7 @@ static void qy8_machine_instance_init(Object *obj)
     object_property_add_bool(obj, "ignition", qy8_ignition_get,
                              qy8_ignition_set);
     object_property_set_description(obj, "ignition",
-                                    "ignition input (IGN), off by default");
+        "ignition input (IGN), on by default with the built-in TCU");
 
     object_property_add_bool(obj, "gpio-port10", qy8_gpio_port10_get,
                              qy8_gpio_port10_set);

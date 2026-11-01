@@ -46,14 +46,14 @@ static gboolean read_model(const char *path,
 static void usage(const char *program)
 {
     fprintf(stderr,
-            "usage: %s [-n] [--read-only] [--headless] "
+            "usage: %s [-n] [--read-only] [--headless] [--no-network] "
             "[--dbgprint FILE] NOR [SD] "
             "[QEMU arguments...]\n"
             "       %s --identify NOR\n"
-            "QY8 TCU modem is enabled by default; disable with "
-            "-machine tcu=off.\n"
-            "Attach a QEMU user network to the built-in PPP modem with "
-            "-netdev user,id=tcu,restrict=on -machine tcu-netdev=tcu.\n",
+            "QY8 TCU modem and user networking are enabled by default; "
+            "disable networking with --no-network.\n"
+            "An explicit -netdev suppresses the default user network; "
+            "connect it with -machine tcu-netdev=ID.\n",
             program, program);
 }
 
@@ -318,6 +318,7 @@ int main(int argc, char **argv)
     gboolean dry_run = FALSE;
     gboolean read_only = FALSE;
     gboolean headless = FALSE;
+    gboolean no_network = FALSE;
     const char *dbgprint = NULL;
     int first_arg = 1;
     const char *flash;
@@ -355,6 +356,8 @@ int main(int argc, char **argv)
             read_only = TRUE;
         } else if (!strcmp(argv[first_arg], "--headless")) {
             headless = TRUE;
+        } else if (!strcmp(argv[first_arg], "--no-network")) {
+            no_network = TRUE;
         } else if (!strcmp(argv[first_arg], "--dbgprint")) {
             if (first_arg + 1 >= argc) {
                 usage(argv[0]);
@@ -456,7 +459,7 @@ int main(int argc, char **argv)
         flash_drive = nor_overlay;
         sd_drive = sd_overlay;
     }
-    args = g_new0(char *, argc + 14);
+    args = g_new0(char *, argc + 20);
     args[arg_count++] = emulator;
     args[arg_count++] = (char *)"-M";
     args[arg_count++] = (char *)board->machine;
@@ -486,6 +489,14 @@ int main(int argc, char **argv)
         !has_argument(argc - first_arg, argv + first_arg, "-icount")) {
         args[arg_count++] = (char *)"-icount";
         args[arg_count++] = (char *)board->icount;
+    }
+    if (!no_network && !strcmp(board->machine, "clarion-qy8") &&
+        !has_argument(argc - first_arg, argv + first_arg,
+                                     "-netdev")) {
+        args[arg_count++] = (char *)"-netdev";
+        args[arg_count++] = (char *)"user,id=tcu";
+        args[arg_count++] = (char *)"-machine";
+        args[arg_count++] = (char *)"tcu-netdev=tcu";
     }
     if (dbgprint) {
         g_autofree char *plugin_path = find_dbgprint_plugin(directory);
