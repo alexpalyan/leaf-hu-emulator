@@ -15,6 +15,7 @@
 #include <qemu-plugin.h>
 
 #define E32_EXP 0x24
+#define IMAGE_SCAN_LIMIT (128 * 1024 * 1024)
 
 static const char *wanted[] = {
     "NKDbgPrintfW", "NKvDbgPrintfW", "OutputDebugStringW"
@@ -228,6 +229,7 @@ static bool load_image_symbols(const char *path)
     g_autoptr(GMappedFile) mapped = NULL;
     const gchar *contents;
     gsize size;
+    gsize scan_size;
     bool loaded = false;
     mapped = g_mapped_file_new(path, FALSE, &error);
     if (!mapped) {
@@ -237,27 +239,31 @@ static bool load_image_symbols(const char *path)
     }
     contents = g_mapped_file_get_contents(mapped);
     size = g_mapped_file_get_length(mapped);
-    for (gsize marker = 0; marker + 4 <= size; marker++) {
+    scan_size = MIN(size, IMAGE_SCAN_LIMIT);
+    fprintf(stderr, "clarion-dbgprint: scanning %s (%zu of %zu bytes)\n",
+            path, scan_size, size);
+    for (gsize marker = 0; marker + 4 <= scan_size; marker++) {
         Xip xip;
         uint32_t romhdr_va, physfirst32, count, physlast;
         bool valid = false;
         if (memcmp(contents + marker, "ECEC", 4) || marker < 0x40) {
             continue;
         }
-        xip = (Xip){ (const guint8 *)contents, size, marker - 0x40, 0,
+        xip = (Xip){ (const guint8 *)contents, scan_size, marker - 0x40, 0,
                      0, 0 };
-        if (!image_u32(xip.data, size, xip.base + 0x44, &romhdr_va)) {
+        if (!image_u32(xip.data, scan_size, xip.base + 0x44, &romhdr_va)) {
             continue;
         }
         for (uint64_t physfirst = 0x80000000; physfirst < 0x90000000;
              physfirst += 0x10000) {
             int64_t rh = (int64_t)(uint64_t)romhdr_va - physfirst + xip.base;
-            if (rh < 0 || (uint64_t)rh > size || size - rh < 0x100 ||
-                !image_u32(xip.data, size, rh + 8, &physfirst32) ||
+            if (rh < 0 || (uint64_t)rh > scan_size ||
+                scan_size - rh < 0x100 ||
+                !image_u32(xip.data, scan_size, rh + 8, &physfirst32) ||
                 physfirst32 != physfirst ||
-                !image_u32(xip.data, size, rh + 0x10, &count) ||
+                !image_u32(xip.data, scan_size, rh + 0x10, &count) ||
                 !count || count >= 2000 ||
-                !image_u32(xip.data, size, rh + 0xc, &physlast) ||
+                !image_u32(xip.data, scan_size, rh + 0xc, &physlast) ||
                 physfirst >= physlast) {
                 continue;
             }
@@ -281,6 +287,8 @@ static bool load_image_symbols(const char *path)
             }
         }
     }
+    fprintf(stderr, "clarion-dbgprint: %s image %s\n",
+            loaded ? "found symbols in" : "found no symbols in", path);
     return loaded;
 }
 
@@ -654,7 +662,8 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
                      &host_time)) {
             fprintf(output, "\n===== QEMU start: host %s =====\n", timestamp);
         } else {
-            fprintf(output, "\n===== QEMU start: host time unavailable =====\n");
+            fprintf(output, "\n===== QEMU start: host time unavailable "
+                    "=====\n");
         }
     }
     qemu_plugin_register_vcpu_init_cb(id, vcpu_init, NULL);
