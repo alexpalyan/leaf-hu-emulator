@@ -947,7 +947,7 @@ static void qy7_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_add_uint8_ptr(oc, "gps-status",
         offsetof(QY7MachineState, gps_status), OBJ_PROP_FLAG_READWRITE);
     object_class_property_set_description(oc, "gps-status",
-        "Byte at offset +1 in A0 (default 0x02 indicates GPS fix; "
+        "Byte at offset +1 in A0 (default 0x02 is nonzero in Sensor info; "
         "0x42 suppresses system-time update)");
     object_class_property_add_bool(oc, "micom", qy7_get_micom,
                                    qy7_set_micom);

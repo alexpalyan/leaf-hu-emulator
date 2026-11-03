@@ -148,8 +148,8 @@ come from QEMU's RTC, set with ``-rtc base=...``. By default, ``gps=on``
 and ``gps-rollover=on`` emulate the receiver's 1024-week date rollover.
 Set ``gps-rollover=off`` to send the RTC date unchanged. ``gps-status``
 sets the status byte at offset ``+0x01`` in each receiver packet. The
-default ``0x02`` is shown as a fix in the QY7 Sensor info screen; value
-``0x42`` prevents the guest driver from setting system time.
+default ``0x02`` appears as a nonzero status in the Sensor info screen;
+value ``0x42`` prevents the guest driver from setting system time.
 
 .. code-block:: shell
 
