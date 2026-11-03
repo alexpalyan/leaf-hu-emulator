@@ -88,7 +88,7 @@ static void clarion_scif_idle_expire(void *opaque)
     if (s->fifo_len) {
 
         timer_mod(s->idle,
-                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + CLARION_SCIF_IDLE_NS);
+                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->rx_idle_ns);
     }
 }
 
@@ -211,7 +211,7 @@ void clarion_scif_receive(void *opaque, const uint8_t *buf, int size)
     s->dr = false;
     clarion_scif_rx_pump(s);
     timer_mod(s->idle,
-              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + CLARION_SCIF_IDLE_NS);
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->rx_idle_ns);
 }
 
 void clarion_scif_init(ClarionScif *s, MemoryRegion *sysmem, hwaddr base,
@@ -219,6 +219,7 @@ void clarion_scif_init(ClarionScif *s, MemoryRegion *sysmem, hwaddr base,
                        qemu_irq irq, DeviceState *dmac, bool txi)
 {
     s->index = index;
+    s->rx_idle_ns = CLARION_SCIF_IDLE_NS;
     s->txi = txi;
     s->base = base;
     s->irq = irq;

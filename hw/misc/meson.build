@@ -187,4 +187,5 @@ system_ss.add(when: 'CONFIG_CLARION_DISPMICOM', if_true: files('clarion_dispmico
 system_ss.add(when: 'CONFIG_CLARION_SCPU', if_true: files('clarion_scpu.c'))
 system_ss.add(when: 'CONFIG_CLARION_BCM', if_true: files('clarion_bcm.c'))
 system_ss.add(when: 'CONFIG_CLARION_UBLOX', if_true: files('clarion_ublox.c'))
+system_ss.add(when: 'CONFIG_CLARION_QY7_GPS', if_true: files('clarion_qy7_gps.c'))
 system_ss.add(when: 'CONFIG_CLARION_USBPHY', if_true: files('clarion_usbphy.c'))

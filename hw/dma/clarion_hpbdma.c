@@ -312,6 +312,10 @@ static hwaddr hpb_module_addr(ClarionHpbDmaState *s, int ch)
         /* QY7221NL serial_scif.dll configures SCI1 TX on channel 10. */
         return 0xffe4100c;
     }
+    if (s->qy7_mode && ch == 7) {
+        /* QY7221NL navdrv.dll configures SCIF7 RX on channel 7. */
+        return 0xffe47014;
+    }
     /* QY7 SDHI0 uses HPB channel 8 in WinCE and channel 9 in EH12. */
     if (s->qy7_mode && (ch == 8 || ch == 9)) {
         return 0xffe4c030;
@@ -656,12 +660,25 @@ bool clarion_hpbdma_feed(DeviceState *dev, hwaddr periph_addr, uint8_t val)
          * silently stop handling uncharacterized SCIF-like cases.
          */
         hwaddr mod = hpb_module_addr(s, ch);
+        bool matched;
 
         if (!c->active || !c->left || !(c->dcr & DCR_SMDL)) {
+            if (s->qy7_mode && ch == 7 &&
+                periph_addr == 0xffe47014) {
+                trace_clarion_hpbdma_qy7_rx_feed(
+                    (uint32_t)periph_addr, val, c->active, c->dsasr,
+                    c->dcr, c->left, false);
+            }
             continue;
         }
-        if (mod != HPB_NO_MODULE ? mod != periph_addr
-                                 : c->dsasr != periph_addr) {
+        matched = mod != HPB_NO_MODULE ? mod == periph_addr
+                                       : c->dsasr == periph_addr;
+        if (s->qy7_mode && ch == 7 && periph_addr == 0xffe47014) {
+            trace_clarion_hpbdma_qy7_rx_feed(
+                (uint32_t)periph_addr, val, c->active, c->dsasr, c->dcr,
+                c->left, matched);
+        }
+        if (!matched) {
             continue;
         }
         address_space_write(&address_space_memory,

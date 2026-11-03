@@ -59,6 +59,7 @@ clarion_hpbdma_chan_write(int ch, uint32_t off, uint64_t val) "ch%d +0x%02x <- 0
 clarion_hpbdma_start(int ch, unsigned plane, uint32_t dcr, uint32_t sar, uint32_t dar, uint32_t left) "ch%d plane%u DCR=0x%08x SAR=0x%08x DAR=0x%08x N=%u"
 clarion_hpbdma_complete(int ch, uint32_t dcr, uint32_t dsasr, uint32_t ddasr, uint32_t dtcsr) "ch%d DCR=%08x DSASR=%08x DDASR=%08x DTCSR=%08x"
 clarion_hpbdma_module_service(int ch, uint32_t addr, uint32_t sar, uint32_t dar, uint32_t left) "ch%d module 0x%08x SAR=0x%08x DAR=0x%08x N=%u"
+clarion_hpbdma_qy7_rx_feed(uint32_t addr, uint8_t val, bool active, uint32_t dsasr, uint32_t dcr, uint32_t left, bool matched) "SCIF7 RX addr=%08x byte=%02x active=%d DSASR=%08x DCR=%08x left=%u matched=%d"
 
 # clarion_lbdma.c
 clarion_lbdma_write(uint32_t off, uint64_t val) "+0x%03x <- 0x%08" PRIx64
