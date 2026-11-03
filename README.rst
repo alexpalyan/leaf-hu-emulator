@@ -148,14 +148,14 @@ come from QEMU's RTC, set with ``-rtc base=...``. By default, ``gps=on``
 and ``gps-rollover=on`` emulate the receiver's 1024-week date rollover.
 Set ``gps-rollover=off`` to send the RTC date unchanged. ``gps-status``
 sets the status byte at offset ``+0x01`` in each receiver packet. The
-default ``0x02`` appears as a nonzero status in the Sensor info screen;
+default ``0x01`` lets the QY7 navigation process update its OBJ time from the packet;
 value ``0x42`` prevents the guest driver from setting system time.
 
 .. code-block:: shell
 
   build-release/qemu-clarion --read-only --headless qy7221nl-nor.bin map-card.img \
       -rtc base=2026-11-03T12:00:00 \
-      -machine gps=on,gps-rollover=off,gps-status=0x02
+      -machine gps=on,gps-rollover=off,gps-status=0x01
 
 Limitations
 ===========

@@ -198,7 +198,7 @@ static const VMStateDescription vmstate_clarion_qy7_gps = {
 
 static const Property qy7_gps_properties[] = {
     DEFINE_PROP_BOOL("rollover", ClarionQy7GpsState, rollover, true),
-    DEFINE_PROP_UINT8("status", ClarionQy7GpsState, status, 0x02),
+    DEFINE_PROP_UINT8("status", ClarionQy7GpsState, status, 0x01),
 };
 
 static void qy7_gps_class_init(ObjectClass *oc, const void *data)
