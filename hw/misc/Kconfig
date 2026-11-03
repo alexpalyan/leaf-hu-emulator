@@ -280,5 +280,8 @@ config CLARION_BCM
 config CLARION_UBLOX
     bool
 
+config CLARION_QY7_GPS
+    bool
+
 config CLARION_USBPHY
     bool

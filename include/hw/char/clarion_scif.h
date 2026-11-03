@@ -23,6 +23,7 @@ typedef struct ClarionScif {
     unsigned fifo_len;
     bool dr;
     QEMUTimer *idle;
+    int64_t rx_idle_ns;
     int index;
     bool txi;
     bool (*dma_feed)(DeviceState *, hwaddr, uint8_t);

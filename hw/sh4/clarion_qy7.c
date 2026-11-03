@@ -19,6 +19,7 @@
 #include "hw/misc/clarion_scpu.h"
 #include "hw/misc/clarion_rcan.h"
 #include "hw/misc/clarion_bcm.h"
+#include "hw/misc/clarion_qy7_gps.h"
 #include "hw/misc/clarion_boards.h"
 #include "hw/display/clarion_du.h"
 #include "hw/display/clarion_2dg.h"
@@ -76,6 +77,7 @@
 #define QY7_SCIF3_BASE 0xffe43000
 #define QY7_SCIF5_BASE 0xffe45000
 #define QY7_SCIF7_BASE 0xffe47000
+#define QY7_SCIF_SCSCR_RE 0x0010
 /*
  * The ninth serial_scif.dll instance (registry key Drivers\BuiltIn\HSCIF,
  * Index 8, Prefix SCI) is opened by the device manager at boot.  Its
@@ -103,6 +105,10 @@ typedef struct QY7MachineState {
     uint8_t micom_generic_reply_subcode;
     bool micom_audio_off;
     bool micom_antitheft_release;
+    bool gps_on;
+    bool gps_rollover;
+    uint8_t gps_status;
+    DeviceState *gps;
     char *can_log_path;
     char *can_replay_path;
     DeviceState *scpu;
@@ -149,6 +155,17 @@ static int qy7_dispmicom_sink(void *opaque, const uint8_t *buf, int len)
     return done;
 }
 
+static int qy7_gps_sink(void *opaque, const uint8_t *buf, int len)
+{
+    ClarionScif *scif = opaque;
+    if (len <= 0 || !(scif->scscr & QY7_SCIF_SCSCR_RE) ||
+        clarion_scif_can_receive(scif) <= 0) {
+        return 0;
+    }
+    clarion_scif_receive(scif, buf, 1);
+    return 1;
+}
+
 static int qy7_micom_sink(void *opaque, const uint8_t *buf, int len)
 {
     ClarionScif *scif = opaque;
@@ -185,6 +202,9 @@ static void qy7_machine_instance_init(Object *obj)
     s->micom_generic_reply_subcode = 0;
     s->micom_audio_off = true;
     s->micom_antitheft_release = true;
+    s->gps_on = true;
+    s->gps_rollover = true;
+    s->gps_status = 0;
     s->mcan_refresh = timer_new_ns(QEMU_CLOCK_VIRTUAL, qy7_mcan_refresh, s);
     s->mcan_key_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, qy7_mcan_key_timer, s);
     object_property_add_uint8_ptr(obj, "micom-generic-reply-subcode",
@@ -230,6 +250,26 @@ static bool qy7_get_micom(Object *obj, Error **errp)
 static void qy7_set_micom(Object *obj, bool value, Error **errp)
 {
     ((QY7MachineState *)obj)->micom_on = value;
+}
+
+static bool qy7_get_gps(Object *obj, Error **errp)
+{
+    return ((QY7MachineState *)obj)->gps_on;
+}
+
+static void qy7_set_gps(Object *obj, bool value, Error **errp)
+{
+    ((QY7MachineState *)obj)->gps_on = value;
+}
+
+static bool qy7_get_gps_rollover(Object *obj, Error **errp)
+{
+    return ((QY7MachineState *)obj)->gps_rollover;
+}
+
+static void qy7_set_gps_rollover(Object *obj, bool value, Error **errp)
+{
+    ((QY7MachineState *)obj)->gps_rollover = value;
 }
 
 static bool qy7_get_bcm(Object *obj, Error **errp)
@@ -554,6 +594,7 @@ static void qy7_init(MachineState *machine)
     DeviceState *dmac;
     ClarionScif *scif1;
     ClarionScif *scif3;
+    ClarionScif *scif7;
     QY7DispSink *disp_sink;
     DeviceState *du;
     DeviceState *g2d;
@@ -738,8 +779,24 @@ static void qy7_init(MachineState *machine)
     clarion_dispmicom_set_sink(dispmicom, qy7_dispmicom_sink, disp_sink);
     clarion_dispmicom_set_can_key_sink(dispmicom, qy7_mcan_key, qmachine);
     /* SCIF7: the same polling routine, SCFSR at VA 0x2f0010. */
-    qy7_scif_with_alias(sysmem, QY7_SCIF7_BASE, "qy7.scif7", 7,
-                        clarion_qy7_int2_scif_irq(int2, 7));
+    scif7 = qy7_scif_with_alias(sysmem, QY7_SCIF7_BASE, "qy7.scif7", 7,
+                                clarion_qy7_int2_scif_irq(int2, 7));
+    /* Keep 4800-baud frame bytes in one DMA burst across character times. */
+    scif7->rx_idle_ns = 5 * 1000 * 1000;
+    scif7->dmac = dmac;
+    scif7->dma_feed = clarion_hpbdma_feed;
+    scif7->dma_eod = clarion_hpbdma_eod;
+    if (qmachine->gps_on) {
+        qmachine->gps = qdev_new(TYPE_CLARION_QY7_GPS);
+        qdev_prop_set_bit(qmachine->gps, "rollover", qmachine->gps_rollover);
+        qdev_prop_set_uint8(qmachine->gps, "status", qmachine->gps_status);
+        object_property_add_child(OBJECT(qmachine), "gps-device",
+                                  OBJECT(qmachine->gps));
+        qdev_realize_and_unref(qmachine->gps, NULL, &error_fatal);
+        scif7->ublox = qmachine->gps;
+        scif7->ublox_tx = clarion_qy7_gps_rx_byte;
+        clarion_qy7_gps_set_sink(qmachine->gps, qy7_gps_sink, scif7);
+    }
     /* HSCIF: the same polling routine, SCFSR at VA 0x00e40010 (area 7). */
     qy7_scif_with_alias(sysmem, QY7_HSCIF_BASE, "qy7.hscif", 8, NULL);
     clarion_usbphy_init(sysmem, QY7_USBPHY_BASE, 2, "qy7.usbphy");
@@ -880,6 +937,17 @@ static void qy7_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(oc, "paired-card",
         "The SD card is locked with the PROD card password at power-up, "
         "like a card paired with this unit (default on)");
+    object_class_property_add_bool(oc, "gps", qy7_get_gps, qy7_set_gps);
+    object_class_property_set_description(oc, "gps",
+        "Time-only GPS receiver on SCIF7 (default on)");
+    object_class_property_add_bool(oc, "gps-rollover", qy7_get_gps_rollover,
+                                   qy7_set_gps_rollover);
+    object_class_property_set_description(oc, "gps-rollover",
+        "Return a date 1024 weeks before the QEMU RTC date (default on)");
+    object_class_property_add_uint8_ptr(oc, "gps-status",
+        offsetof(QY7MachineState, gps_status), OBJ_PROP_FLAG_READWRITE);
+    object_class_property_set_description(oc, "gps-status",
+        "Byte at offset +1 in A0 (default 0; 0x42 suppresses system-time update)");
     object_class_property_add_bool(oc, "micom", qy7_get_micom,
                                    qy7_set_micom);
     object_class_property_set_description(oc, "micom",
