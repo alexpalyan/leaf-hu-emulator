@@ -1613,6 +1613,8 @@ static void handle_state_gldisable(Pending *pending_call)
     if (args[0] != 0x0be2 && args[0] != 0x0bd0 && args[0] != 0x0b71 &&
         args[0] != 0x0b90) {
         mirror_fail("unsupported disabled GL capability");
+    } else if (args[0] == 0x0be2) {
+        blend_enabled = FALSE;
     }
 }
 
@@ -2739,7 +2741,8 @@ static void emit_foreign_entry(const Qy8RenderExport *function,
     g_string_free(event, TRUE);
 }
 
-static void emit_entry_event(const Qy8RenderExport *function, Pending *call,
+static void emit_entry_event(const Qy8RenderExport *function,
+                             const char *module, Pending *call,
                              gboolean is_dynamic, uint32_t registers[4],
                              uint32_t link_register, uint32_t pc_word,
                              uint64_t stack_values[8])
@@ -2752,12 +2755,14 @@ static void emit_entry_event(const Qy8RenderExport *function, Pending *call,
                            next_seq++, is_dynamic ? "dynamic_entry" : "entry",
                            call->id);
     json_quote(event, function->name);
+    g_string_append_printf(event, ",\"lr\":\"0x%08x\",\"lr_module\":",
+                           link_register);
+    json_quote(event, module);
     g_string_append_printf(
         event,
-        ",\"lr\":\"0x%08x\",\"lr_module\":\"auirtdll.dll\","
-        "\"sp\":\"0x%08x\",\"word\":\"0x%08x\",\"args\":["
+        ",\"sp\":\"0x%08x\",\"word\":\"0x%08x\",\"args\":["
         "\"0x%08x\",\"0x%08x\",\"0x%08x\",\"0x%08x\"],\"stack\":[",
-        link_register, (uint32_t)call->sp, pc_word, registers[0], registers[1],
+        (uint32_t)call->sp, pc_word, registers[0], registers[1],
         registers[2], registers[3]);
     for (int i = 0; i < 8; i++) {
         if (i) {
@@ -2830,12 +2835,13 @@ static void process_entry(unsigned int cpu, const Qy8RenderExport *function)
     uint32_t current_process = 0;
     gboolean process_is_aui =
         service_target && current_process_is_aui(&current_process);
-    gboolean caller_is_aui = !strcmp(module, "auirtdll.dll");
-    if (service_target && (!caller_is_aui || !process_is_aui)) {
+    gboolean caller_is_renderer = !strcmp(module, "auirtdll.dll") ||
+                                  !strcmp(module, "GdiSubGL.dll");
+    if (service_target && (!caller_is_renderer || !process_is_aui)) {
         emit_service_foreign(function->name, module, link_register,
                              current_process, current_process != 0);
     }
-    if (!caller_is_aui) {
+    if (!caller_is_renderer) {
         emit_foreign_entry(function, module, link_register);
         return;
     }
@@ -2853,10 +2859,10 @@ static void process_entry(unsigned int cpu, const Qy8RenderExport *function)
         call->args[i] = registers[i];
     }
     memcpy(call->stack, stack_values, sizeof(stack_values));
-    emit_entry_event(function, call, is_dynamic, registers, link_register,
-                     pc_word, stack_values);
+    emit_entry_event(function, module, call, is_dynamic, registers,
+                     link_register, pc_word, stack_values);
     update_live_state(function, call);
-    if (service_target && caller_is_aui && process_is_aui) {
+    if (service_target && caller_is_renderer && process_is_aui) {
         skip_service_call(function, call, link_register);
         return;
     }

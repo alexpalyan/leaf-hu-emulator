@@ -25,6 +25,7 @@
 #include "qemu/osdep.h"
 #include <math.h>
 #include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "qemu/error-report.h"
 #include "qemu/units.h"
 #include "qemu/log.h"
@@ -59,6 +60,8 @@
 #include "hw/char/clarion_scif.h"
 #include "hw/usb/hcd-ehci.h"
 #include "hw/usb/hcd-ohci.h"
+#include "hw/usb/usb.h"
+#include "chardev/char.h"
 #include "hw/block/flash.h"
 #include "system/block-backend.h"
 #include "system/blockdev.h"
@@ -248,6 +251,9 @@ static int qy8_scif_chr_index(int scif)
 /* Status bits polled by the bootloader in loop @0x1148 (see below). */
 #define BCTL_ST_PWR         0x0080
 #define BCTL_ST_BOOT        0x0400
+
+/* GPIO.dll EVT_GPIO_AUDIO_M reads BCTL DIPSW bit 10 as GPIO port 10. */
+#define BCTL_DIPSW_AUDIO_M  0x0400
 
 /*
  * Vehicle inputs in the same word, from GPIO.dll's register reader (QY8202NA
@@ -1766,6 +1772,9 @@ struct Qy8MachineState {
     DeviceState *tma460;
     DeviceState *ehci;
     DeviceState *ohci;
+    bool tcu_on;
+    char *tcu_chardev;
+    char *tcu_netdev;
     DeviceState *sgx;         /* PowerVR SGX @0xFCE00000 */
     DeviceState *g2d;
     DeviceState *shcore;
@@ -1800,6 +1809,8 @@ struct Qy8MachineState {
     char *board;                /* property value: "auto", "g214" or "g218" */
     const Qy8BoardProperties *board_properties; /* resolved in qy8_init() */
     bool reverse;               /* RV input, machine property */
+    bool ignition;              /* IGN input, machine property */
+    bool gpio_port10;           /* GPIO.dll input, BCTL DIPSW bit 10 */
     bool g2d_on;
     bool shcore_on;
     bool shcore_init_only;
@@ -1812,6 +1823,7 @@ struct Qy8MachineState {
     char *can_log_path;
     char *can_replay_path;
     bool tcu_auto_reply;
+    int tcu_state_reply;
 
     MemoryRegion flash;          /* only when flash is provided as ROM */
     DriveInfo *flash_drive;      /* -drive if=pflash: writable copy */
@@ -1992,15 +2004,47 @@ static bool qy8_has_tma616(Qy8MachineState *s)
     return s->board_properties && s->board_properties->tma616;
 }
 
-/* Parking brake on, lights off; reverse as the property says */
+/* Parking brake on, lights off; IGN and reverse follow machine properties */
 static void qy8_bctl_set_inputs(Qy8MachineState *s)
 {
     uint16_t *st = &s->bctl.reg[BCTL_STATUS >> 1];
 
-    *st = (*st & ~(BCTL_ST_PKB | BCTL_ST_RV)) | BCTL_ST_ILL;
+    *st = (*st & ~(BCTL_ST_PKB | BCTL_ST_RV | BCTL_ST_PWR)) | BCTL_ST_ILL;
+    if (!s->ignition) {
+        *st |= BCTL_ST_PWR;
+    }
     if (!s->reverse) {
         *st |= BCTL_ST_RV;
     }
+}
+
+static bool qy8_ignition_get(Object *obj, Error **errp)
+{
+    return QY8_MACHINE(obj)->ignition;
+}
+
+/* GPIO.dll polls the active-low BCTL IGN bit. */
+static void qy8_ignition_set(Object *obj, bool value, Error **errp)
+{
+    Qy8MachineState *s = QY8_MACHINE(obj);
+
+    s->ignition = value;
+    qy8_bctl_set_inputs(s);
+}
+
+static bool qy8_gpio_port10_get(Object *obj, Error **errp)
+{
+    return QY8_MACHINE(obj)->gpio_port10;
+}
+
+static void qy8_gpio_port10_set(Object *obj, bool value, Error **errp)
+{
+    Qy8MachineState *s = QY8_MACHINE(obj);
+    uint16_t *dipsw = &s->bctl.reg[BCTL_DIPSW >> 1];
+
+    s->gpio_port10 = value;
+    *dipsw = (*dipsw & ~BCTL_DIPSW_AUDIO_M) |
+             (value ? BCTL_DIPSW_AUDIO_M : 0);
 }
 
 static bool qy8_reverse_get(Object *obj, Error **errp)
@@ -2015,6 +2059,50 @@ static void qy8_reverse_set(Object *obj, bool value, Error **errp)
 
     s->reverse = value;
     qy8_bctl_set_inputs(s);
+}
+
+static bool qy8_tcu_get(Object *obj, Error **errp)
+{
+    return QY8_MACHINE(obj)->tcu_on;
+}
+
+static void qy8_tcu_set(Object *obj, bool value, Error **errp)
+{
+    Qy8MachineState *s = QY8_MACHINE(obj);
+
+    s->tcu_on = value;
+    s->tcu_auto_reply = value;
+    s->tcu_state_reply = value ? 1 : -1;
+    s->ignition = value;
+    s->gpio_port10 = value;
+}
+
+static char *qy8_tcu_chardev_get(Object *obj, Error **errp)
+{
+    return g_strdup(QY8_MACHINE(obj)->tcu_chardev);
+}
+
+static void qy8_tcu_chardev_set(Object *obj, const char *value, Error **errp)
+{
+    Qy8MachineState *s = QY8_MACHINE(obj);
+
+    g_free(s->tcu_chardev);
+    s->tcu_chardev = g_strdup(value);
+}
+
+static char *qy8_tcu_netdev_get(Object *obj, Error **errp)
+{
+    (void)errp;
+    return g_strdup(QY8_MACHINE(obj)->tcu_netdev);
+}
+
+static void qy8_tcu_netdev_set(Object *obj, const char *value, Error **errp)
+{
+    Qy8MachineState *s = QY8_MACHINE(obj);
+
+    (void)errp;
+    g_free(s->tcu_netdev);
+    s->tcu_netdev = g_strdup(value);
 }
 
 static char *qy8_render_get(Object *obj, Error **errp)
@@ -2498,7 +2586,8 @@ static void qy8_init(MachineState *machine)
     /* --- board controller: DIPSW and standby exit enable --- */
     s->bctl.reg[BCTL_STATUS >> 1] = BCTL_ST_PWR | BCTL_ST_BOOT;
     qy8_bctl_set_inputs(s);
-    s->bctl.reg[BCTL_DIPSW >> 1] = s->dipsw & 7;
+    s->bctl.reg[BCTL_DIPSW >> 1] = (s->dipsw & 7) |
+        (s->gpio_port10 ? BCTL_DIPSW_AUDIO_M : 0);
     memory_region_init_io(&s->bctl.mr, NULL, &qy8_bctl_ops, &s->bctl,
                           "qy8.bctl", QY8_BCTL_SIZE);
     /* Overrides the sram1 window because the board uses the same CS. */
@@ -2527,6 +2616,23 @@ static void qy8_init(MachineState *machine)
     sysbus_mmio_map_overlap(SYS_BUS_DEVICE(s->ohci), 0, QY8_OHCI_BASE, 2);
     sysbus_connect_irq(SYS_BUS_DEVICE(s->ohci), 0,
                        qemu_allocate_irq(qy8_usb_irq, s, 0));
+
+    if (s->tcu_on) {
+        Chardev *chr = qemu_chr_find(s->tcu_chardev);
+        DeviceState *tcu;
+
+        tcu = qdev_new("usb-cdc-acm");
+        qdev_set_id(tcu, g_strdup("qy8-tcu"), &error_fatal);
+        if (chr) {
+            qdev_prop_set_chr(tcu, "chardev", chr);
+        }
+        if (s->tcu_netdev && s->tcu_netdev[0]) {
+            object_property_set_str(OBJECT(tcu), "netdev", s->tcu_netdev,
+                                   &error_fatal);
+        }
+        usb_realize_and_unref(USB_DEVICE(tcu),
+                              &SYS_BUS_EHCI(s->ehci)->ehci.bus, &error_fatal);
+    }
 
     /* --- Display Unit: actual QEMU window --- */
     /*
@@ -2667,6 +2773,8 @@ static void qy8_init(MachineState *machine)
         s->can = qdev_new(TYPE_RENESAS_CAN);
         object_property_set_bool(OBJECT(s->can), "tcu-auto-reply",
                                  s->tcu_auto_reply, &error_fatal);
+        object_property_set_int(OBJECT(s->can), "tcu-state-reply",
+                                s->tcu_state_reply, &error_fatal);
         if (*s->can_log_path) {
             object_property_set_str(OBJECT(s->can), "can-log",
                                     s->can_log_path, &error_fatal);
@@ -2945,6 +3053,36 @@ static void qy8_tcu_auto_reply_set(Object *obj, bool value, Error **errp)
     }
 }
 
+static void qy8_tcu_state_reply_get(Object *obj, Visitor *v,
+                                    const char *name, void *opaque,
+                                    Error **errp)
+{
+    int64_t value = QY8_MACHINE(obj)->tcu_state_reply;
+
+    visit_type_int(v, name, &value, errp);
+}
+
+static void qy8_tcu_state_reply_set(Object *obj, Visitor *v,
+                                    const char *name, void *opaque,
+                                    Error **errp)
+{
+    Qy8MachineState *s = QY8_MACHINE(obj);
+    int64_t value;
+
+    if (!visit_type_int(v, name, &value, errp)) {
+        return;
+    }
+    if (value < -1 || value > UINT8_MAX) {
+        error_setg(errp, "QY8: tcu-state-reply must be -1..255");
+        return;
+    }
+    s->tcu_state_reply = (int)value;
+    if (s->can) {
+        object_property_set_int(OBJECT(s->can), "tcu-state-reply", value,
+                                errp);
+    }
+}
+
 static bool qy8_micom_get(Object *obj, Error **errp)
 {
     return QY8_MACHINE(obj)->micom_on;
@@ -3068,7 +3206,24 @@ static void qy8_machine_instance_init(Object *obj)
     s->render_dump_dir = g_strdup("");
     s->can_log_path = g_strdup("");
     s->can_replay_path = g_strdup("");
-    s->tcu_auto_reply = false;
+    s->tcu_auto_reply = true;
+    s->tcu_state_reply = 1;
+    s->ignition = true;
+    s->gpio_port10 = true;
+    s->tcu_chardev = g_strdup("tcu");
+    s->tcu_netdev = g_strdup("");
+    s->tcu_on = true;
+    object_property_add_bool(obj, "tcu", qy8_tcu_get, qy8_tcu_set);
+    object_property_set_description(obj, "tcu",
+        "attach the Sierra CDC ACM TCU modem (default on)");
+    object_property_add_str(obj, "tcu-chardev", qy8_tcu_chardev_get,
+                            qy8_tcu_chardev_set);
+    object_property_set_description(obj, "tcu-chardev",
+        "chardev backend for the optional TCU modem (default: tcu)");
+    object_property_add_str(obj, "tcu-netdev", qy8_tcu_netdev_get,
+                            qy8_tcu_netdev_set);
+    object_property_set_description(obj, "tcu-netdev",
+        "network backend for the built-in TCU modem (default: none)");
     object_property_add_str(obj, "render", qy8_render_get, qy8_render_set);
     object_property_set_description(obj, "render",
         "render backend: cpu, angle, or off");
@@ -3098,6 +3253,11 @@ static void qy8_machine_instance_init(Object *obj)
                              qy8_tcu_auto_reply_set);
     object_property_set_description(obj, "tcu-auto-reply",
         "enable the virtual-time QY8 TCU response policy (default off)");
+    object_property_add(obj, "tcu-state-reply", "int",
+                        qy8_tcu_state_reply_get, qy8_tcu_state_reply_set,
+                        NULL, NULL);
+    object_property_set_description(obj, "tcu-state-reply",
+        "return a configured TCU state for HU ReadTcuState; -1 disables it");
     object_property_add_str(obj, "can-replay", NULL, qy8_can_replay_set);
     object_property_set_description(obj, "can-replay",
         "replay period_ms ID#DATA lines from this file");
@@ -3128,6 +3288,16 @@ static void qy8_machine_instance_init(Object *obj)
                              qy8_reverse_set);
     object_property_set_description(obj, "reverse",
         "reverse gear input (RV), off by default");
+
+    object_property_add_bool(obj, "ignition", qy8_ignition_get,
+                             qy8_ignition_set);
+    object_property_set_description(obj, "ignition",
+        "ignition input (IGN), on by default with the built-in TCU");
+
+    object_property_add_bool(obj, "gpio-port10", qy8_gpio_port10_get,
+                             qy8_gpio_port10_set);
+    object_property_set_description(obj, "gpio-port10",
+        "GPIO.dll port 10 input (EVT_GPIO_AUDIO_M, BCTL DIPSW bit 10)");
 
     s->board = g_strdup("auto");
     object_property_add_str(obj, "board", qy8_board_get, qy8_board_set);

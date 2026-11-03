@@ -67,6 +67,7 @@
 #include "exec/target_page.h"
 #include "hw/core/cpu.h"
 #include "qemu/module.h"
+#include "qapi/visitor.h"
 #include "hw/core/sysbus.h"
 #include "hw/core/irq.h"
 #include "hw/net/renesas_can.h"
@@ -86,6 +87,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(RenesasCANState, RENESAS_CAN)
 #define CAN_MKR_SIZE    0x040
 #define CAN_CTL_BASE    0x800   /* MCTL[64] and control registers         */
 #define CAN_CTL_SIZE    0x100
+#define CAN_TCU_AUTO_REPLY_GAP_MS 5
 
 #define CAN_CTLR        0x840   /* Control Register, 16 bits              */
 #define CAN_STR         0x842   /* Status Register, 16 bits, read-only    */
@@ -108,7 +110,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(RenesasCANState, RENESAS_CAN)
 #define CTL_MSSR        CTL_OFF(0x852)
 #define CTL_IER         CTL_OFF(0x860)
 #define CTL_ISR         CTL_OFF(0x861)
-/* CAN.dll scans mailbox MCTL state; no ISR read appears in that path. */
+/* CAN.dll uses ISR bit 0 for TX completion and bit 1 for RX. */
+#define ISR_TX          0x01
 #define ISR_RX          0x02
 #define MKR_MIER1       0x2c    /* interrupt enable, mailboxes 32..63     */
 #define MKR_MIER0       0x3c    /* mailboxes 0..31                        */
@@ -154,6 +157,8 @@ typedef struct CanRxSeqFrame {
 
 typedef struct CanAutoReply {
     int64_t deadline_ms;
+    uint64_t enqueue_order;
+    uint8_t min_gap_ms;
     uint32_t id;
     bool ext;
     uint8_t dlc;
@@ -193,18 +198,26 @@ struct RenesasCANState {
 
     /* Optional QY8 TCU policy responses to HU frames. */
     bool tcu_auto_reply;
+    int tcu_state_reply;
+    uint8_t tcu_next_sequence;
     QEMUTimer *tcu_auto_reply_timer;
     GQueue tcu_auto_replies;
+    uint64_t tcu_auto_reply_next_order;
     uint16_t hu_message_length;
     uint16_t hu_message_received;
     uint8_t hu_message_marker;
     uint8_t hu_next_sequence;
+    uint8_t tcu_response_stage;
+    uint8_t tcu_version_marker;
+    uint8_t tcu_id_marker;
+    bool tcu_id_info_pending;
 };
 
 static void can_log(RenesasCANState *s, const char *fmt, ...)
     G_GNUC_PRINTF(2, 3);
 static void can_tcu_auto_reply_tx(RenesasCANState *s, uint32_t id, bool ext,
                                   uint8_t dlc, const uint8_t *data);
+static void can_tcu_auto_reply_free(CanAutoReply *reply);
 
 static const char *can_mode_name(uint8_t mode)
 {
@@ -407,17 +420,23 @@ static uint8_t can_isr(RenesasCANState *s)
 {
     uint32_t mier0 = can_ld(&s->mkr[MKR_MIER0], 4);
     uint32_t mier1 = can_ld(&s->mkr[MKR_MIER1], 4);
+    uint8_t isr = 0;
     int i;
 
     for (i = 0; i < 64; i++) {
         bool en = i < 32 ? mier0 & BIT(i) : mier1 & BIT(i - 32);
+        uint8_t ctl = s->ctl[i];
 
-        if (en && (s->ctl[i] & (MCTL_RECREQ | MCTL_DATA)) ==
-                  (MCTL_RECREQ | MCTL_DATA)) {
-            return ISR_RX;
+        if (!en || !(ctl & MCTL_DATA)) {
+            continue;
+        }
+        if (ctl & MCTL_RECREQ) {
+            isr |= ISR_RX;
+        } else {
+            isr |= ISR_TX;
         }
     }
-    return 0;
+    return isr;
 }
 
 static void can_update_irq(RenesasCANState *s)
@@ -601,6 +620,21 @@ static void can_reset_hold(Object *obj, ResetType type)
     can_st(&s->ctl[CTL_OFF(CAN_CTLR)], 2, CTLR_CANM_RESET);
     /* No mailbox search has run, so there is no result. */
     s->ctl[CTL_MSSR] = MSSR_SEST;
+
+    timer_del(s->tcu_auto_reply_timer);
+    while (!g_queue_is_empty(&s->tcu_auto_replies)) {
+        can_tcu_auto_reply_free(g_queue_pop_head(&s->tcu_auto_replies));
+    }
+    s->tcu_auto_reply_next_order = 0;
+    s->tcu_next_sequence = 0;
+    s->hu_message_length = 0;
+    s->hu_message_received = 0;
+    s->hu_message_marker = 0;
+    s->hu_next_sequence = 0;
+    s->tcu_response_stage = 0;
+    s->tcu_version_marker = 0;
+    s->tcu_id_marker = 0;
+    s->tcu_id_info_pending = false;
 }
 
 /*
@@ -673,11 +707,34 @@ static void can_tcu_auto_reply_free(CanAutoReply *reply)
     g_free(reply);
 }
 
+static gint can_tcu_auto_reply_compare(gconstpointer a, gconstpointer b,
+                                       gpointer opaque)
+{
+    const CanAutoReply *reply_a = a;
+    const CanAutoReply *reply_b = b;
+
+    (void)opaque;
+    if (reply_a->deadline_ms < reply_b->deadline_ms) {
+        return -1;
+    }
+    if (reply_a->deadline_ms > reply_b->deadline_ms) {
+        return 1;
+    }
+    if (reply_a->enqueue_order < reply_b->enqueue_order) {
+        return -1;
+    }
+    if (reply_a->enqueue_order > reply_b->enqueue_order) {
+        return 1;
+    }
+    return 0;
+}
+
 static void can_tcu_auto_reply_tick(void *opaque)
 {
     RenesasCANState *s = opaque;
     CanAutoReply *reply = g_queue_pop_head(&s->tcu_auto_replies);
     int64_t now = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
+    uint8_t min_gap_ms;
 
     if (!reply) {
         return;
@@ -689,30 +746,42 @@ static void can_tcu_auto_reply_tick(void *opaque)
     }
     can_log(s, "event=tcu-auto-reply source=tcu-auto-reply trigger=%s",
             reply->trigger);
+    min_gap_ms = reply->min_gap_ms;
     can_inject(s, reply->id, reply->ext, reply->dlc, reply->data,
                "tcu-auto-reply");
     can_tcu_auto_reply_free(reply);
     reply = g_queue_peek_head(&s->tcu_auto_replies);
     if (reply) {
-        timer_mod(s->tcu_auto_reply_timer, reply->deadline_ms);
+        now = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
+        timer_mod(s->tcu_auto_reply_timer,
+                  MAX(reply->deadline_ms,
+                      now + MAX(min_gap_ms,
+                                CAN_TCU_AUTO_REPLY_GAP_MS)));
     }
 }
 
-static void can_tcu_auto_reply_queue(RenesasCANState *s, const char *trigger,
-                                     uint8_t dlc, const uint8_t *data)
+static void can_tcu_auto_reply_queue_delay_gap(RenesasCANState *s,
+                                               const char *trigger,
+                                               uint8_t dlc,
+                                               const uint8_t *data,
+                                               int64_t delay_ms,
+                                               uint8_t min_gap_ms)
 {
     CanAutoReply *reply = g_new0(CanAutoReply, 1);
     int64_t now = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
-    bool was_empty = g_queue_is_empty(&s->tcu_auto_replies);
+    CanAutoReply *old_head = g_queue_peek_head(&s->tcu_auto_replies);
     char hex[2 * 8 + 1];
     int i;
 
-    reply->deadline_ms = now + 2;
+    reply->deadline_ms = now + delay_ms;
+    reply->enqueue_order = s->tcu_auto_reply_next_order++;
+    reply->min_gap_ms = min_gap_ms;
     reply->id = 0x6ac;
     reply->dlc = dlc;
     memcpy(reply->data, data, dlc);
     reply->trigger = g_strdup(trigger);
-    g_queue_push_tail(&s->tcu_auto_replies, reply);
+    g_queue_insert_sorted(&s->tcu_auto_replies, reply,
+                          can_tcu_auto_reply_compare, NULL);
 
     for (i = 0; i < dlc; i++) {
         snprintf(hex + 2 * i, 3, "%02x", data[i]);
@@ -720,11 +789,28 @@ static void can_tcu_auto_reply_queue(RenesasCANState *s, const char *trigger,
     hex[2 * dlc] = '\0';
     can_log(s,
             "event=tcu-auto-scheduled source=tcu-auto-reply trigger=%s"
-            " delay_ms=2 response_id=0x000006ac response=%s",
-            trigger, hex);
-    if (was_empty) {
-        timer_mod(s->tcu_auto_reply_timer, reply->deadline_ms);
+            " delay_ms=%" PRId64 " response_id=0x000006ac response=%s",
+            trigger, delay_ms, hex);
+    if (g_queue_peek_head(&s->tcu_auto_replies) != old_head) {
+        CanAutoReply *head = g_queue_peek_head(&s->tcu_auto_replies);
+
+        timer_mod(s->tcu_auto_reply_timer, head->deadline_ms);
     }
+}
+
+static void can_tcu_auto_reply_queue_delay(RenesasCANState *s,
+                                           const char *trigger,
+                                           uint8_t dlc, const uint8_t *data,
+                                           int64_t delay_ms)
+{
+    can_tcu_auto_reply_queue_delay_gap(s, trigger, dlc, data, delay_ms,
+                                       CAN_TCU_AUTO_REPLY_GAP_MS);
+}
+
+static void can_tcu_auto_reply_queue(RenesasCANState *s, const char *trigger,
+                                     uint8_t dlc, const uint8_t *data)
+{
+    can_tcu_auto_reply_queue_delay(s, trigger, dlc, data, 2);
 }
 
 static void can_tcu_auto_reply_ack(RenesasCANState *s, uint8_t marker,
@@ -733,6 +819,17 @@ static void can_tcu_auto_reply_ack(RenesasCANState *s, uint8_t marker,
     uint8_t ack[8] = { 0xe0, marker, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
 
     can_tcu_auto_reply_queue(s, trigger, sizeof(ack), ack);
+}
+
+static uint8_t can_tcu_stmin_ms(uint8_t stmin)
+{
+    if (stmin <= 0x7f) {
+        return stmin;
+    }
+    if (stmin >= 0xf1 && stmin <= 0xf9) {
+        return 1;
+    }
+    return 0;
 }
 
 static void can_tcu_auto_reply_tx(RenesasCANState *s, uint32_t id, bool ext,
@@ -758,7 +855,114 @@ static void can_tcu_auto_reply_tx(RenesasCANState *s, uint32_t id, bool ext,
 
         if (length > 0 && length <= dlc - 1) {
             can_tcu_auto_reply_ack(s, data[1], "HU-single-frame");
+            if (length >= 3 && data[2] == 0x00 && data[3] == 0x21 &&
+                data[1] == 0x00 && s->tcu_response_stage == 0) {
+                uint8_t selector[8] = { 0x03, 0x00, 0x00, 0x20,
+                                        0x00, 0x00, 0x00, 0x00 };
+
+                can_tcu_auto_reply_queue_delay(s, "HU-selector-request",
+                                               sizeof(selector), selector, 10);
+                s->tcu_response_stage = 1;
+            } else if (length >= 3 && data[2] == 0x00 && data[3] == 0x2c) {
+                uint8_t commid[8] = { 0x03, data[1], 0x00, 0x2c,
+                                      0x00, 0x00, 0x00, 0x00 };
+                uint8_t empty[8] = { 0x03, (uint8_t)(data[1] + 0x10),
+                                     0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+                uint8_t function_11[8] = { 0x06, 0x30, 0x02, 0x2c,
+                                           0x00, 0x00, 0x00, 0x00 };
+                uint8_t function_10[8] = { 0x06, 0x40, 0x02, 0x0c,
+                                           0x00, 0x00, 0x00, 0x00 };
+
+                can_tcu_auto_reply_queue_delay(s, "HU-ComMid-request",
+                                               sizeof(commid), commid, 8);
+                can_tcu_auto_reply_queue_delay(s, "HU-ComMid-empty-record",
+                                               sizeof(empty), empty, 24);
+                can_tcu_auto_reply_queue_delay(s, "HU-ComMid-0x11-op-c",
+                                               sizeof(function_11),
+                                               function_11, 40);
+                can_tcu_auto_reply_queue_delay(s, "HU-ComMid-0x10-op-c",
+                                               sizeof(function_10),
+                                               function_10, 56);
+                s->tcu_response_stage = 4;
+            } else if (length >= 3 && data[2] == 0x02 && data[3] == 0x21) {
+                uint8_t version[8] = { 0x06, data[1], 0x02, 0x2c,
+                                       0x01, 0x00, 0x00, 0x00 };
+
+                can_tcu_auto_reply_queue_delay(s, "HU-software-version",
+                                               sizeof(version), version, 12);
+                s->tcu_version_marker = data[1];
+                s->tcu_response_stage = 5;
+            }
+            if (s->tcu_state_reply >= 0 && length >= 3 &&
+                data[2] == 0x20 && data[3] == 0x61) {
+                uint8_t state_reply[8] = {
+                    0x06, (uint8_t)(s->tcu_next_sequence << 4),
+                    0x20, 0x6c, s->tcu_state_reply, 0x00, 0x00, 0x00,
+                };
+
+                can_tcu_auto_reply_queue_delay(s, "HU-ReadTcuState",
+                                               sizeof(state_reply),
+                                               state_reply, 200);
+                s->tcu_next_sequence = (s->tcu_next_sequence + 1) & 0x0f;
+            }
         }
+    } else if (pci == 0xe && dlc >= 2) {
+        uint8_t marker = data[1];
+
+        s->tcu_next_sequence = (((marker >> 4) + 1) & 0x0f);
+        if (s->tcu_response_stage == 5 &&
+            marker == s->tcu_version_marker) {
+            s->tcu_id_marker = (marker + 0x10) & 0x70;
+            uint8_t id[8] = { 0x06, s->tcu_id_marker, 0x44, 0x8d,
+                              0x01, 0x01, 0x00, 0x00 };
+
+            can_tcu_auto_reply_queue_delay(s, "HU-ID-0x224-op-d-ACK",
+                                           sizeof(id), id, 8);
+            s->tcu_response_stage = 6;
+        } else if (s->tcu_response_stage == 6 &&
+                   marker == s->tcu_id_marker) {
+            uint8_t first[8] = { 0x10, 0x24,
+                                 (uint8_t)((marker + 0x10) & 0x70),
+                                 0x46, 0x6c, 0x00, 0x41, 0x41 };
+
+            can_tcu_auto_reply_queue_delay(s, "HU-ID_INFO-request",
+                                           sizeof(first), first, 8);
+            s->tcu_id_info_pending = true;
+            s->tcu_response_stage = 7;
+        }
+    } else if (pci == 3 && dlc >= 3 && s->tcu_id_info_pending) {
+        uint8_t stmin_ms = can_tcu_stmin_ms(data[2]);
+        uint8_t cf1[8] = { 0x21, 0x41, 0x41, 0x41,
+                           0x41, 0x41, 0x41, 0x41 };
+        uint8_t cf2[8] = { 0x22, 0x41, 0x41, 0x41,
+                           0x41, 0x41, 0x41, 0x41 };
+        uint8_t cf3[8] = { 0x23, 0x41, 0x41, 0x41,
+                           0x41, 0x41, 0x41, 0x41 };
+        uint8_t cf4[8] = { 0x24, 0x41, 0x41, 0x41,
+                           0x41, 0x41, 0x41, 0x41 };
+        uint8_t cf5[3] = { 0x25, 0x41, 0x41 };
+
+        can_log(s, "event=tcu-auto-stmin source=HU stmin=0x%02x"
+                " interval_ms=%u", data[2], stmin_ms);
+        can_tcu_auto_reply_queue_delay_gap(s, "HU-ID_INFO-flow-control",
+                                           sizeof(cf1), cf1, stmin_ms,
+                                           stmin_ms);
+        can_tcu_auto_reply_queue_delay_gap(s,
+                                           "HU-ID_INFO-consecutive-frame",
+                                           sizeof(cf2), cf2, 2 * stmin_ms,
+                                           stmin_ms);
+        can_tcu_auto_reply_queue_delay_gap(s,
+                                           "HU-ID_INFO-consecutive-frame",
+                                           sizeof(cf3), cf3, 3 * stmin_ms,
+                                           stmin_ms);
+        can_tcu_auto_reply_queue_delay_gap(s,
+                                           "HU-ID_INFO-consecutive-frame",
+                                           sizeof(cf4), cf4, 4 * stmin_ms,
+                                           stmin_ms);
+        can_tcu_auto_reply_queue_delay_gap(s, "HU-ID_INFO-final-frame",
+                                           sizeof(cf5), cf5, 5 * stmin_ms,
+                                           stmin_ms);
+        s->tcu_id_info_pending = false;
     } else if (pci == 1 && dlc == 8) {
         uint16_t length = ((data[0] & 0x0f) << 8) | data[1];
 
@@ -918,6 +1122,32 @@ static void can_tcu_auto_reply_set(Object *obj, bool value, Error **errp)
     RENESAS_CAN(obj)->tcu_auto_reply = value;
 }
 
+static void can_tcu_state_reply_get(Object *obj, Visitor *v,
+                                    const char *name, void *opaque,
+                                    Error **errp)
+{
+    int64_t value = RENESAS_CAN(obj)->tcu_state_reply;
+
+    visit_type_int(v, name, &value, errp);
+}
+
+static void can_tcu_state_reply_set(Object *obj, Visitor *v,
+                                    const char *name, void *opaque,
+                                    Error **errp)
+{
+    RenesasCANState *s = RENESAS_CAN(obj);
+    int64_t value;
+
+    if (!visit_type_int(v, name, &value, errp)) {
+        return;
+    }
+    if (value < -1 || value > UINT8_MAX) {
+        error_setg(errp, "renesas-can: tcu-state-reply must be -1..255");
+        return;
+    }
+    s->tcu_state_reply = (int)value;
+}
+
 static void can_replay_tick(void *opaque)
 {
     CanRxReplay *r = opaque;
@@ -1029,11 +1259,16 @@ static void can_init(Object *obj)
     s->rx_seq_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, can_rx_seq_tick, s);
     s->tcu_auto_reply_timer =
         timer_new_ms(QEMU_CLOCK_VIRTUAL, can_tcu_auto_reply_tick, s);
+    s->tcu_state_reply = -1;
+    s->tcu_auto_reply_next_order = 0;
     g_queue_init(&s->tcu_auto_replies);
     object_property_add_str(obj, "rx", can_rx_get, can_rx_set);
     object_property_add_str(obj, "rx-seq", NULL, can_rx_seq_set);
     object_property_add_bool(obj, "tcu-auto-reply", can_tcu_auto_reply_get,
                              can_tcu_auto_reply_set);
+    object_property_add(obj, "tcu-state-reply", "int",
+                        can_tcu_state_reply_get, can_tcu_state_reply_set,
+                        NULL, NULL);
     object_property_add_str(obj, "can-log", NULL, can_log_set);
     object_property_add_str(obj, "can-replay", NULL, can_replay_set);
     memory_region_init_io(&s->iomem, obj, &can_ops, s, "renesas-can",

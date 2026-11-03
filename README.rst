@@ -121,8 +121,13 @@ starts QEMU. You never pass ``-M`` or ``-drive`` yourself.
   build-release/qemu-clarion flash.bin map-card.img             # NOR and SD card
   build-release/qemu-clarion --read-only flash.bin map-card.img # leave both files untouched
   build-release/qemu-clarion --headless flash.bin               # no window
+  build-release/qemu-clarion --no-network flash.bin             # disable default TCU network
   build-release/qemu-clarion --dbgprint guest.log flash.bin     # capture guest debug output
   build-release/qemu-clarion -n flash.bin map-card.img          # print the QEMU command and exit
+
+For QY8, the launcher provides a default QEMU user network to the built-in
+TCU. Pass ``--no-network`` to disable it. An explicit ``-netdev`` suppresses
+the default; connect a custom backend with ``-machine tcu-netdev=ID``.
 
 .. list-table::
    :header-rows: 1

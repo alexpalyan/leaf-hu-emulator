@@ -60,7 +60,8 @@ the same command line is merged with the first.
 | `can-replay` | unset | file of periodic `period_ms ID#DATA` receive frames |
 | `can-rx` | write-only | inject one `ID#DATA` frame at runtime through QMP |
 | `rx-seq` | write-only | schedule `DELAY_MS ID#DATA` frames on the virtual clock |
-| `tcu-auto-reply` | `off` | respond to HU CAN records using the virtual-time TCU test policy |
+| `tcu-auto-reply` | `on` | respond to HU CAN records using the virtual-time TCU test policy |
+| `tcu-state-reply` | `1` | synthetic value returned for HU `ReadTcuState`; `-1` disables it |
 | `shcore` | `on` | `on` models synthetic CPUCOM startup and initialization-end; `init` keeps only initialization-end; `off` disables SH modeling |
 | `gps-lat` | `50.4501` | fix latitude in decimal degrees; writable at runtime with `qom-set` |
 | `gps-lon` | `30.5234` | fix longitude in decimal degrees; writable at runtime with `qom-set` |
@@ -73,6 +74,71 @@ the same command line is merged with the first.
 | `i2c4-recorder` | `off` | transaction recorder on I2C4, address `0x24` |
 | `tma460` | `on` | TMA460 touchscreen controller model on I2C4 (requires `i2c4=on`); on the `g214` board a TMA616 at `0x67` instead |
 | `tma460-profile` | `on` | Synthetic TMA460 register profile with pointer-to-touch input |
+| `tcu` | `on` | Attach the Sierra USB CDC ACM modem model to the EHCI bus |
+| `tcu-chardev` | `tcu` | Chardev ID used for modem data when `tcu=on` |
+| `tcu-netdev` | unset on direct QEMU runs; `tcu` in `qemu-clarion` | QEMU network backend for the built-in modem and PPP adapter |
+| `ignition` | `on` | synthetic IGN input while the built-in TCU is enabled |
+| `gpio-port10` | `on` | synthetic GPIO port 10 input while the built-in TCU is enabled |
+
+### TCU modem model
+
+The Sierra modem uses VID:PID `1199:68ab` and the observed AR8550
+seven-interface configuration. CDC ACM interfaces 3 and 4 expose interrupt
+IN and bulk IN/OUT endpoints; both route data through the configured QEMU
+chardev when one is configured. It is enabled by default, matching the TCU's
+presence on the vehicle bus. Without a matching chardev ID or `tcu-netdev`,
+the USB device still enumerates, but AT commands receive no response. Use
+`tcu=off` to disable the device and synthetic TCU, IGN, and GPIO inputs. The built-in AT
+modem and PPP adapter are enabled only when `tcu-netdev` names a QEMU network
+backend and no chardev is connected. For an isolated QEMU user network:
+
+```sh
+build-release/qemu-system-arm \
+    -netdev user,id=tcu \
+    -M clarion-qy8,tcu=on,tcu-netdev=tcu \
+    -object filter-dump,id=tcu-dump,netdev=tcu,file=/tmp/tcu.pcap \
+    -trace events=/tmp/tcu-trace.events,file=/tmp/tcu-trace.log
+```
+
+The modem answers the observed AT setup and `ATD*99***1#`, then negotiates
+PPP LCP/IPCP. IPCP uses the QEMU user-network guest address `10.0.2.15` and DNS
+server `10.0.2.3`. PPP IP packets are passed through a QEMU NIC attached to
+that backend; the modem model does not implement its own IP stack. The launcher
+enables user networking by default; `--no-network` disables that default. A
+custom `-netdev` is connected with `-machine tcu-netdev=ID`.
+QEMU documents that `restrict=on` still permits explicitly configured
+forwarding rules. Do not add `guestfwd` unless the owner authorizes a local
+service connection. For example, with a TCP service listening on host loopback
+port 1234, an owner-approved opt-in rule would be
+`-netdev user,id=tcu,restrict=on,guestfwd=tcp:10.0.2.100:1234-tcp:127.0.0.1:1234`.
+Both `restrict=off` and `guestfwd` are disabled by default. See the
+[QEMU user networking documentation](https://www.qemu.org/docs/master/system/qemu-manpage.html)
+for `restrict` and `guestfwd` behavior.
+
+The model is a regular `usb-cdc-acm` USB device on `usb-bus.0`; `tcu=on` creates
+it on the EHCI bus. With `tcu=off`, a
+USB device can instead be attached to the same bus through `-device` or QMP.
+For a physical TCU, use `-device usb-host,vendorid=0x1199,productid=0x68ab,bus=usb-bus.0`
+after the host OS has enumerated the device. A paused-QEMU hotplug check added
+and removed `usb-serial` on `usb-bus.0`; this verifies the QEMU bus path, but
+does not exercise libusb or a physical TCU. The guest was not rebooted during
+that bus check.
+
+When a chardev is configured, the host connects to its socket as a client.
+Bytes from CDC bulk OUT are sent to the chardev; bytes received from the
+chardev are delivered through bulk IN. When `tcu-netdev` is set without a
+chardev, the built-in AT/PPP peer handles modem data and passes negotiated IP
+packets to the configured QEMU NIC.
+Trace events record control transfers, line coding, DTR/RTS, break, bulk data,
+and CDC SERIAL_STATE changes. The event file can enable the `usb_cdc_acm_*`
+events listed in `hw/usb/trace-events`. Convert those trace lines to JSONL
+when an evidence workflow needs structured records; the device does not write
+JSON through `LOG_GUEST_ERROR`.
+
+In the T240 `tcu=on` run, the guest attached its ACM driver, opened the modem
+port, completed AT initialization, and entered PPP data mode after
+`ATD*99***1#`; this was confirmed by the guest debug log and the nonempty modem
+list at `0x94fc4`.
 
 ### Board selection
 
@@ -200,14 +266,15 @@ Only one sequence can be active at a time. A new sequence requested while one
 is pending returns an error. Every frame is delivered by a `QEMU_CLOCK_VIRTUAL`
 timer and recorded in `can-log`.
 
-`tcu-auto-reply=on` enables an opt-in policy responder for standard HU frames
+`tcu-auto-reply=on` enables the policy responder for standard HU frames
 on CAN ID `0x62c`. Each response is delivered to ID `0x6ac` two virtual
 milliseconds after its trigger and is tagged `source=tcu-auto-reply` in
 `can-log`. A single-frame HU message receives `e0 <marker>`; a first frame
 receives ISO-TP CTS flow control (`30 00 00 ff ff ff ff ff`), and completion
 of its consecutive-frame message receives `e0 <first-frame marker>`. The HU
 heartbeat `f0 23 0a 01 …` receives `f0 23 0a 02 00 00 00 00`. The default is
-off, so existing CAN behavior is unchanged unless explicitly enabled.
+on with `tcu=on`; `tcu=off` disables the responder. `tcu-state-reply` controls
+the synthetic response to `ReadTcuState`.
 
 ## 3. Serial ports and SD cards
 
@@ -380,8 +447,9 @@ the guest is not redrawn after that.
 
 * The GPU model does not rasterize; GPU-rendered content appears in the
   window only through MIRROR (see the MIRROR section).
-* Not modeled: the CAN bus beyond the controller itself, USB, I2C devices
-  other than the TMA460.
+* Not modeled: the CAN bus beyond the controller itself, USB devices other
+  than the optional experimental TCU CDC ACM model, and I2C devices other
+  than the TMA460.
 
 ## Guest debug output
 
