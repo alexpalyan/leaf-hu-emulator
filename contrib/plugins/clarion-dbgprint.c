@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <inttypes.h>
 #include <glib.h>
 #include <qemu-plugin.h>
@@ -637,12 +638,25 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
         }
     }
     g_ptr_array_free(images, TRUE);
-    output = out_path ? fopen(out_path, "w") : stderr;
+    output = out_path ? fopen(out_path, "a") : stderr;
     if (!output) {
         fprintf(stderr, "clarion-dbgprint: cannot open output file\n");
         return -1;
     }
     setvbuf(output, NULL, _IOLBF, 0);
+    {
+        time_t now = time(NULL);
+        struct tm host_time;
+        char timestamp[32];
+
+        if (localtime_r(&now, &host_time) &&
+            strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S %z",
+                     &host_time)) {
+            fprintf(output, "\n===== QEMU start: host %s =====\n", timestamp);
+        } else {
+            fprintf(output, "\n===== QEMU start: host time unavailable =====\n");
+        }
+    }
     qemu_plugin_register_vcpu_init_cb(id, vcpu_init, NULL);
     qemu_plugin_register_vcpu_tb_trans_cb(id, tb_trans, NULL);
     return 0;
