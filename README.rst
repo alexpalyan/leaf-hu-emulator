@@ -31,7 +31,7 @@ Dependencies on macOS: Xcode Command Line Tools, Python 3, and
   mkdir -p build-release && cd build-release
   ../configure --target-list=arm-softmmu,sh4-softmmu \
       --disable-werror --enable-plugins --disable-docs
-  ninja qemu-system-arm qemu-system-sh4 qemu-clarion
+  ninja qemu-system-arm qemu-system-sh4 qemu-clarion contrib-plugins
   cd ..
 
 Use this optimized build to run units. A debug build
@@ -147,14 +147,15 @@ The QY7 machine has a time-only GPS receiver on SCIF7. Its date and time
 come from QEMU's RTC, set with ``-rtc base=...``. By default, ``gps=on``
 and ``gps-rollover=on`` emulate the receiver's 1024-week date rollover.
 Set ``gps-rollover=off`` to send the RTC date unchanged. ``gps-status``
-sets the status byte at offset ``+0x01`` in each receiver packet; value
+sets the status byte at offset ``+0x01`` in each receiver packet. The
+default ``0x02`` is shown as a fix in the QY7 Sensor info screen; value
 ``0x42`` prevents the guest driver from setting system time.
 
 .. code-block:: shell
 
   build-release/qemu-clarion --read-only --headless qy7221nl-nor.bin map-card.img \
       -rtc base=2026-11-03T12:00:00 \
-      -machine gps=on,gps-rollover=off,gps-status=0
+      -machine gps=on,gps-rollover=off,gps-status=0x02
 
 Limitations
 ===========
