@@ -807,6 +807,12 @@ static void qy7_init(MachineState *machine)
     create_unimplemented_device("qy7.lbsc-window", 0xff801000, 0x3000);
     create_unimplemented_device("qy7.lbsc-window2", 0xff804100, 0xf00);
     create_unimplemented_device("qy7.gpio", 0xffc40000, 0x4000);
+    create_unimplemented_device("qy7.gyro", 0xffc5a000, 0x1000);
+    create_unimplemented_device("qy7.spdpls", 0xffc5b000, 0x1000);
+    create_unimplemented_device("qy7.gyro-a7", A7ADDR(0xffc5a000),
+                                0x1000);
+    create_unimplemented_device("qy7.spdpls-a7", A7ADDR(0xffc5b000),
+                                0x1000);
     create_unimplemented_device("qy7.cpg", 0xffc80000, 0x1000);
     {
         DeviceState *wdt = qdev_new("clarion-qy7-wdt");
