@@ -15,5 +15,6 @@ ClarionQy7Spdpls *clarion_qy7_spdpls_init(MemoryRegion *sysmem,
                                          hwaddr base, qemu_irq irq,
                                          uint32_t speed_kmh,
                                          uint32_t pulses_per_km);
+void clarion_qy7_spdpls_set_speed(ClarionQy7Spdpls *s, uint32_t speed_kmh);
 
 #endif

@@ -110,6 +110,24 @@ static void spdpls_reset(void *opaque)
     }
 }
 
+void clarion_qy7_spdpls_set_speed(ClarionQy7Spdpls *s, uint32_t speed_kmh)
+{
+    uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    uint64_t rate;
+
+    s->speed_kmh = speed_kmh;
+    s->phase_remainder = 0;
+    timer_del(s->pulse_timer);
+    timer_del(s->latch_timer);
+
+    rate = spdpls_rate(s);
+    s->period_remainder = rate ? SPDPLS_NS_PER_HOUR % rate : 0;
+    if (rate) {
+        timer_mod(s->pulse_timer, now + spdpls_next_period(s));
+        timer_mod(s->latch_timer, now + SPDPLS_LATCH_WINDOW_NS);
+    }
+}
+
 static uint64_t spdpls_read(void *opaque, hwaddr addr, unsigned size)
 {
     ClarionQy7Spdpls *s = opaque;

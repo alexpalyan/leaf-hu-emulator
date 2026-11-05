@@ -81,6 +81,8 @@
 #define QY7_SCIF5_BASE 0xffe45000
 #define QY7_SCIF7_BASE 0xffe47000
 #define QY7_SCIF_SCSCR_RE 0x0010
+#define QY7_GYRO_BASE 0xffc5a000
+#define QY7_GYRO_SIZE 0x1000
 /*
  * The ninth serial_scif.dll instance (registry key Drivers\BuiltIn\HSCIF,
  * Index 8, Prefix SCI) is opened by the device manager at boot.  Its
@@ -100,6 +102,7 @@ typedef struct QY7MachineState {
     uint32_t wdt_pclk_hz;
     uint32_t speed_kmh;
     uint32_t vehicle_pulses_per_km;
+    uint32_t gyro_raw;
     bool wdt_enabled;
     uint16_t status0_inputs;
     bool extint_model;
@@ -117,6 +120,8 @@ typedef struct QY7MachineState {
     char *gps_lon;
     DeviceState *gps;
     ClarionQy7Spdpls *spdpls;
+    MemoryRegion gyro;
+    MemoryRegion *gyro_a7_alias;
     char *can_log_path;
     char *can_replay_path;
     DeviceState *scpu;
@@ -149,6 +154,61 @@ static void qy7_gps_position_update(QY7MachineState *s)
         clarion_qy7_gps_set_position(s->gps, g_ascii_strtod(s->gps_lat, NULL),
                                      g_ascii_strtod(s->gps_lon, NULL));
     }
+}
+
+static uint64_t qy7_gyro_read(void *opaque, hwaddr addr, unsigned int size)
+{
+    QY7MachineState *s = opaque;
+
+    switch (addr) {
+    case 0x030:
+        return s->gyro_raw;
+    case 0x034:
+    case 0x038:
+        return 0x5000;
+    case 0x03c:
+    case 0x040:
+        return 0x4000;
+    default:
+        qemu_log_mask(LOG_UNIMP,
+                      "qy7.gyro: unimplemented device read  "
+                      "(size %u, offset 0x%03" HWADDR_PRIx ")\n",
+                      size, addr);
+        return 0;
+    }
+}
+
+static void qy7_gyro_write(void *opaque, hwaddr addr, uint64_t value,
+                           unsigned int size)
+{
+    qemu_log_mask(LOG_UNIMP,
+                  "qy7.gyro: accepted initialization write "
+                  "(size %u, offset 0x%03" HWADDR_PRIx ", value 0x%08" PRIx64
+                  ")\n",
+                  size, addr, value);
+}
+
+static const MemoryRegionOps qy7_gyro_ops = {
+    .read = qy7_gyro_read,
+    .write = qy7_gyro_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = {
+        .min_access_size = 4,
+        .max_access_size = 4,
+        .unaligned = false,
+    },
+};
+
+static void qy7_gyro_init(QY7MachineState *s, MemoryRegion *sysmem)
+{
+    memory_region_init_io(&s->gyro, OBJECT(s), &qy7_gyro_ops, s, "qy7.gyro",
+                          QY7_GYRO_SIZE);
+    memory_region_add_subregion(sysmem, QY7_GYRO_BASE, &s->gyro);
+    s->gyro_a7_alias = g_new0(MemoryRegion, 1);
+    memory_region_init_alias(s->gyro_a7_alias, OBJECT(s), "qy7.gyro-a7",
+                             &s->gyro, 0, QY7_GYRO_SIZE);
+    memory_region_add_subregion(sysmem, A7ADDR(QY7_GYRO_BASE),
+                                s->gyro_a7_alias);
 }
 
 static void qy7_uart_tx(void *opaque, uint8_t byte)
@@ -213,6 +273,7 @@ static void qy7_machine_instance_init(Object *obj)
     s->wdt_pclk_hz = QY7_WDT_PCLK;
     s->speed_kmh = 0;
     s->vehicle_pulses_per_km = 2500;
+    s->gyro_raw = 0x5000;
     s->wdt_enabled = true;
     /* Assumed asserted PowerMonitor input levels (STATUS0 bits 7 and 9). */
     s->status0_inputs = 0x0280;
@@ -328,6 +389,32 @@ static void qy7_set_gps_status(Object *obj, Visitor *v, const char *name,
     s->gps_status = status;
     if (s->gps) {
         clarion_qy7_gps_set_status(s->gps, status);
+    }
+}
+
+static void qy7_get_speed_kmh(Object *obj, Visitor *v, const char *name,
+                              void *opaque, Error **errp)
+{
+    QY7MachineState *s = (QY7MachineState *)obj;
+    uint32_t speed_kmh = s->speed_kmh;
+
+    (void)opaque;
+    visit_type_uint32(v, name, &speed_kmh, errp);
+}
+
+static void qy7_set_speed_kmh(Object *obj, Visitor *v, const char *name,
+                              void *opaque, Error **errp)
+{
+    QY7MachineState *s = (QY7MachineState *)obj;
+    uint32_t speed_kmh;
+
+    (void)opaque;
+    if (!visit_type_uint32(v, name, &speed_kmh, errp)) {
+        return;
+    }
+    s->speed_kmh = speed_kmh;
+    if (s->spdpls) {
+        clarion_qy7_spdpls_set_speed(s->spdpls, speed_kmh);
     }
 }
 
@@ -912,10 +999,8 @@ static void qy7_init(MachineState *machine)
     create_unimplemented_device("qy7.lbsc-window", 0xff801000, 0x3000);
     create_unimplemented_device("qy7.lbsc-window2", 0xff804100, 0xf00);
     create_unimplemented_device("qy7.gpio", 0xffc40000, 0x4000);
-    create_unimplemented_device("qy7.gyro", 0xffc5a000, 0x1000);
+    qy7_gyro_init(qmachine, sysmem);
     create_unimplemented_device("qy7.spdpls", 0xffc5b000, 0x1000);
-    create_unimplemented_device("qy7.gyro-a7", A7ADDR(0xffc5a000),
-                                0x1000);
     create_unimplemented_device("qy7.spdpls-a7", A7ADDR(0xffc5b000),
                                 0x1000);
     create_unimplemented_device("qy7.cpg", 0xffc80000, 0x1000);
@@ -1032,11 +1117,17 @@ static void qy7_machine_class_init(ObjectClass *oc, const void *data)
         OBJ_PROP_FLAG_READWRITE);
     object_class_property_set_description(oc, "wdt",
         "Enable QY7 WDT counting (default on; off freezes the WDT timer)");
-    object_class_property_add_uint32_ptr(
-        oc, "speed-kmh", offsetof(QY7MachineState, speed_kmh),
-        OBJ_PROP_FLAG_READWRITE);
-    object_class_property_set_description(oc, "speed-kmh",
-        "Synthetic vehicle speed for the SPDPLS model (default 0 km/h)");
+    object_class_property_add(oc, "speed-kmh", "uint32", qy7_get_speed_kmh,
+                              qy7_set_speed_kmh, NULL, NULL);
+    object_class_property_set_description(
+        oc, "speed-kmh",
+        "Synthetic vehicle speed for the SPDPLS model; changes apply live "
+        "(default 0 km/h)");
+    object_class_property_add_uint32_ptr(oc, "gyro-raw",
+                                         offsetof(QY7MachineState, gyro_raw),
+                                         OBJ_PROP_FLAG_READWRITE);
+    object_class_property_set_description(
+        oc, "gyro-raw", "Raw gyro ADC channel 0 value (default 0x5000)");
     object_class_property_add_uint32_ptr(
         oc, "vehicle-pulses-per-km",
         offsetof(QY7MachineState, vehicle_pulses_per_km),

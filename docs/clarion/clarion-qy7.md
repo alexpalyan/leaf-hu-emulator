@@ -42,10 +42,34 @@ build-release/qemu-clarion --read-only --headless \\
     qy7-nor.bin map-card.img
 ```
 
+## Gyro ADC inputs
+
+QY7 `navdrv` maps `HPB_GYRO_REGBASE` at `0xFFC5A000` and reads ADC channels
+from direct 32-bit registers. The A7 alias at `0x1FC5A000` maps the same
+register region. The current model returns:
+
+| Offset | Channel | Value | Evidence |
+|---|---:|---:|---|
+| `+0x030` | 0 | `gyro-raw` (default `0x5000`) | `SckRawCheck` range `(0x3CC9, 0x632D)` at `navdrv.dll:0x03CD5D4C–0x03CD5D5A` |
+| `+0x034` | 1 | `0x5000` | Shared `SckRawCheck` range with channel 2: `(0x1FFE, 0x7FF8)` |
+| `+0x038` | 2 | `0x5000` | Shared `SckRawCheck` range with channel 1: `(0x1FFE, 0x7FF8)` |
+| `+0x03C` | 3 | `0x4000` | `SckRawCheck` range `(0x1FFE, 0x5FFA)` |
+| `+0x040` | 4 | `0x4000` | Read by the gyro worker; no `SckRawCheck` range established |
+
+These are candidate passing values from the stationary QY7 control. The
+firmware checks open intervals and contains no repeated-sample counter in
+`SckRawCheck`. ADC0 is inferred to be the yaw gyro. ADC1 and ADC2 are inferred
+to be the two-axis G-sensor, consistent with the firmware string
+`GSNS 2 AXIS`; ADC3 is inferred to be a reference voltage or temperature
+input. These physical roles are not proven. Initialization writes are
+accepted and logged with `LOG_UNIMP`.
+
 ## Speed pulse input
 
 The QY7 SPDPLS model uses the vehicle's `speed-kmh` property (default `0`,
-which emits no speed pulses). Each pulse increments SPDPLS `INTcount` at
+which emits no speed pulses). QOM changes to `speed-kmh` reschedule pulse and
+latch timers immediately, so the speed can be changed while the guest runs.
+Each pulse increments SPDPLS `INTcount` at
 `+0x010` and raises the modeled INT2 bit 22 input. The guest's INT2 mask-set
 and mask-clear register writes acknowledge and unmask the source; the exact
 hardware re-unmask path is not established by the inspected firmware, so this
