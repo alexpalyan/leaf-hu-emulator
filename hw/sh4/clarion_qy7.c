@@ -3,6 +3,7 @@
 #include <math.h>
 #include "qemu/units.h"
 #include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "qemu/error-report.h"
 #include "hw/core/boards.h"
 #include "system/block-backend.h"
@@ -301,6 +302,33 @@ static bool qy7_get_gps_rollover(Object *obj, Error **errp)
 static void qy7_set_gps_rollover(Object *obj, bool value, Error **errp)
 {
     ((QY7MachineState *)obj)->gps_rollover = value;
+}
+
+static void qy7_get_gps_status(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
+{
+    QY7MachineState *s = (QY7MachineState *)obj;
+    uint8_t status = s->gps ? clarion_qy7_gps_get_status(s->gps) :
+                              s->gps_status;
+
+    (void)opaque;
+    visit_type_uint8(v, name, &status, errp);
+}
+
+static void qy7_set_gps_status(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
+{
+    QY7MachineState *s = (QY7MachineState *)obj;
+    uint8_t status;
+
+    (void)opaque;
+    if (!visit_type_uint8(v, name, &status, errp)) {
+        return;
+    }
+    s->gps_status = status;
+    if (s->gps) {
+        clarion_qy7_gps_set_status(s->gps, status);
+    }
 }
 
 static char *qy7_gps_lat_get(Object *obj, Error **errp)
@@ -1039,11 +1067,12 @@ static void qy7_machine_class_init(ObjectClass *oc, const void *data)
                                    qy7_set_gps_rollover);
     object_class_property_set_description(oc, "gps-rollover",
         "Return a date 1024 weeks before the QEMU RTC date (default on)");
-    object_class_property_add_uint8_ptr(oc, "gps-status",
-        offsetof(QY7MachineState, gps_status), OBJ_PROP_FLAG_READWRITE);
+    object_class_property_add(oc, "gps-status", "uint8",
+                              qy7_get_gps_status, qy7_set_gps_status,
+                              NULL, NULL);
     object_class_property_set_description(oc, "gps-status",
-        "Byte at offset +1 in A0 (default 0x01 enables OBJ time updates; "
-        "0x42 suppresses system-time update)");
+        "Current A0 +1 status. Default sends one 0x01 time-only frame, then "
+        "uses 0x20; qom-set changes it live. 0x42 blocks system-time update");
     object_class_property_add_bool(oc, "micom", qy7_get_micom,
                                    qy7_set_micom);
     object_class_property_set_description(oc, "micom",

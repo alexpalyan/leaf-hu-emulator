@@ -13,6 +13,35 @@ Omit `--headless` to use the display window. The QY7 guest takes longer to
 reach its display than the QY8 guest. The machine connects its display
 microcontroller to SCIF3; panel input is represented as guest protocol frames.
 
+## GPS status and coordinates
+
+The QY7 receiver sends A0 frames on SCIF7. Its startup sequence sends one
+time-only frame with status `0x01`, then changes to `0x20`, which passes the
+Navi position-status gate. The firmware does not establish how long a real
+receiver takes to acquire a fix; the one-frame delay is a minimal model
+inference. The machine-level `gps-status` property reports the current byte and
+can be changed while the guest is running. The value is applied to the next
+A0 frame:
+
+```json
+{"execute":"qom-set","arguments":{"path":"/machine","property":"gps-status","value":1}}
+{"execute":"qom-set","arguments":{"path":"/machine","property":"gps-status","value":32}}
+```
+
+Status bits have separate consumers. The driver suppresses `SetSystemTime`
+when both bits `0x02` and `0x40` are set (`0x42`); Navi's OBJ-time writer
+checks bit `0x02`. Position handling accepts only `0x00`, `0x10`, `0x20`, and
+`0x30`. The firmware does not identify which of these values represents loss
+of fix. `gps-lat` and `gps-lon` are decimal-degree machine properties; the
+receiver encodes them in A0 using the firmware-confirmed 60,000-units-per-
+degree scale. For example:
+
+```sh
+build-release/qemu-clarion --read-only --headless \\
+    -M clarion-qy7,gps-lat=40.00,gps-lon=-75.00 \\
+    qy7-nor.bin map-card.img
+```
+
 ## Speed pulse input
 
 The QY7 SPDPLS model uses the vehicle's `speed-kmh` property (default `0`,

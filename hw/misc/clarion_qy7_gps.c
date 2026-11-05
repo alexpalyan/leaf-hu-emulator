@@ -33,6 +33,7 @@ struct ClarionQy7GpsState {
     unsigned tx_retries;
     bool rollover;
     uint8_t status;
+    bool startup_status_pending;
     double lat;
     double lon;
     uint8_t rx[QY7_GPS_RX_MAX];
@@ -91,6 +92,12 @@ static void qy7_gps_tx_pump(void *opaque)
     s->tx_offset = 0;
     s->tx_accepted = 0;
     s->tx_retries = 0;
+    if (s->startup_status_pending) {
+        s->startup_status_pending = false;
+        s->status = 0x20;
+        qemu_log_mask(LOG_UNIMP,
+                      "clarion-qy7-gps: startup status 0x01 -> 0x20\n");
+    }
 }
 
 static void qy7_gps_make_frame(ClarionQy7GpsState *s)
@@ -179,6 +186,26 @@ void clarion_qy7_gps_set_position(DeviceState *dev, double lat, double lon)
     s->lon = lon;
 }
 
+uint8_t clarion_qy7_gps_get_status(DeviceState *dev)
+{
+    ClarionQy7GpsState *s = CLARION_QY7_GPS(dev);
+
+    return s->status;
+}
+
+void clarion_qy7_gps_set_status(DeviceState *dev, uint8_t status)
+{
+    ClarionQy7GpsState *s = CLARION_QY7_GPS(dev);
+
+    s->startup_status_pending = false;
+    if (s->status != status) {
+        qemu_log_mask(LOG_UNIMP,
+                      "clarion-qy7-gps: status changed 0x%02x -> 0x%02x\n",
+                      s->status, status);
+        s->status = status;
+    }
+}
+
 void clarion_qy7_gps_rx_byte(DeviceState *dev, uint8_t byte)
 {
     ClarionQy7GpsState *s = CLARION_QY7_GPS(dev);
@@ -200,6 +227,7 @@ static void qy7_gps_realize(DeviceState *dev, Error **errp)
 {
     ClarionQy7GpsState *s = CLARION_QY7_GPS(dev);
 
+    s->startup_status_pending = s->status == 0x01;
     s->tick = timer_new_ns(QEMU_CLOCK_VIRTUAL, qy7_gps_tick, s);
     s->tx_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, qy7_gps_tx_pump, s);
     timer_mod(s->tick,
