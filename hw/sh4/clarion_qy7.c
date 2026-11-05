@@ -1,5 +1,6 @@
 /* Clarion QY7 bootloader machine. */
 #include "qemu/osdep.h"
+#include <math.h>
 #include "qemu/units.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
@@ -111,6 +112,8 @@ typedef struct QY7MachineState {
     bool gps_on;
     bool gps_rollover;
     uint8_t gps_status;
+    char *gps_lat;
+    char *gps_lon;
     DeviceState *gps;
     ClarionQy7Spdpls *spdpls;
     char *can_log_path;
@@ -134,6 +137,18 @@ typedef struct QY7DispSink {
 
 static void qy7_mcan_refresh(void *opaque);
 static void qy7_mcan_key_timer(void *opaque);
+static char *qy7_gps_lat_get(Object *obj, Error **errp);
+static void qy7_gps_lat_set(Object *obj, const char *value, Error **errp);
+static char *qy7_gps_lon_get(Object *obj, Error **errp);
+static void qy7_gps_lon_set(Object *obj, const char *value, Error **errp);
+
+static void qy7_gps_position_update(QY7MachineState *s)
+{
+    if (s->gps) {
+        clarion_qy7_gps_set_position(s->gps, g_ascii_strtod(s->gps_lat, NULL),
+                                     g_ascii_strtod(s->gps_lon, NULL));
+    }
+}
 
 static void qy7_uart_tx(void *opaque, uint8_t byte)
 {
@@ -211,6 +226,8 @@ static void qy7_machine_instance_init(Object *obj)
     s->gps_on = true;
     s->gps_rollover = true;
     s->gps_status = 0x01;
+    s->gps_lat = g_strdup("59.91");
+    s->gps_lon = g_strdup("10.75");
     s->mcan_refresh = timer_new_ns(QEMU_CLOCK_VIRTUAL, qy7_mcan_refresh, s);
     s->mcan_key_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, qy7_mcan_key_timer, s);
     object_property_add_uint8_ptr(obj, "micom-generic-reply-subcode",
@@ -236,6 +253,14 @@ static void qy7_machine_instance_init(Object *obj)
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_set_description(obj, "du-dotclk",
         "External DU pixel clock in Hz (0 disables vertical blank timing)");
+    object_property_add_str(obj, "gps-lat", qy7_gps_lat_get, qy7_gps_lat_set);
+    object_property_set_description(
+        obj, "gps-lat",
+        "Synthetic GPS latitude in decimal degrees (default 59.91)");
+    object_property_add_str(obj, "gps-lon", qy7_gps_lon_get, qy7_gps_lon_set);
+    object_property_set_description(
+        obj, "gps-lon",
+        "Synthetic GPS longitude in decimal degrees (default 10.75)");
 }
 
 static bool qy7_get_paired_card(Object *obj, Error **errp)
@@ -276,6 +301,48 @@ static bool qy7_get_gps_rollover(Object *obj, Error **errp)
 static void qy7_set_gps_rollover(Object *obj, bool value, Error **errp)
 {
     ((QY7MachineState *)obj)->gps_rollover = value;
+}
+
+static char *qy7_gps_lat_get(Object *obj, Error **errp)
+{
+    (void)errp;
+    return g_strdup(((QY7MachineState *)obj)->gps_lat);
+}
+
+static void qy7_gps_lat_set(Object *obj, const char *value, Error **errp)
+{
+    QY7MachineState *s = (QY7MachineState *)obj;
+    char *end;
+    double number = g_ascii_strtod(value, &end);
+
+    if (end == value || *end || !isfinite(number) || fabs(number) > 90) {
+        error_setg(errp, "gps-lat must be a decimal latitude in [-90, 90]");
+        return;
+    }
+    g_free(s->gps_lat);
+    s->gps_lat = g_strdup(value);
+    qy7_gps_position_update(s);
+}
+
+static char *qy7_gps_lon_get(Object *obj, Error **errp)
+{
+    (void)errp;
+    return g_strdup(((QY7MachineState *)obj)->gps_lon);
+}
+
+static void qy7_gps_lon_set(Object *obj, const char *value, Error **errp)
+{
+    QY7MachineState *s = (QY7MachineState *)obj;
+    char *end;
+    double number = g_ascii_strtod(value, &end);
+
+    if (end == value || *end || !isfinite(number) || fabs(number) > 180) {
+        error_setg(errp, "gps-lon must be a decimal longitude in [-180, 180]");
+        return;
+    }
+    g_free(s->gps_lon);
+    s->gps_lon = g_strdup(value);
+    qy7_gps_position_update(s);
 }
 
 static bool qy7_get_bcm(Object *obj, Error **errp)
@@ -802,6 +869,7 @@ static void qy7_init(MachineState *machine)
         object_property_add_child(OBJECT(qmachine), "gps-device",
                                   OBJECT(qmachine->gps));
         qdev_realize_and_unref(qmachine->gps, NULL, &error_fatal);
+        qy7_gps_position_update(qmachine);
         scif7->ublox = qmachine->gps;
         scif7->ublox_tx = clarion_qy7_gps_rx_byte;
         clarion_qy7_gps_set_sink(qmachine->gps, qy7_gps_sink, scif7);

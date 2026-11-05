@@ -6,6 +6,7 @@
  */
 
 #include "qemu/osdep.h"
+#include <math.h>
 #include "qemu/log.h"
 #include "qemu/timer.h"
 #include "system/rtc.h"
@@ -32,9 +33,21 @@ struct ClarionQy7GpsState {
     unsigned tx_retries;
     bool rollover;
     uint8_t status;
+    double lat;
+    double lon;
     uint8_t rx[QY7_GPS_RX_MAX];
     unsigned rx_len;
 };
+
+static void qy7_gps_put_coordinate(uint8_t *out, double degrees)
+{
+    int32_t coordinate = llround(degrees * 60000.0);
+    uint32_t raw = (uint32_t)coordinate & 0x0fffffff;
+
+    for (int i = 0; i < 4; i++) {
+        out[i] = (raw >> (21 - 7 * i)) & 0x7f;
+    }
+}
 
 static void qy7_gps_trace_frame(const char *direction, const uint8_t *buf,
                                 unsigned len)
@@ -90,6 +103,8 @@ static void qy7_gps_make_frame(ClarionQy7GpsState *s)
     memset(s->tx, 0, sizeof(s->tx));
     s->tx[0] = 0xa0;
     s->tx[1] = s->status;
+    qy7_gps_put_coordinate(&s->tx[2], s->lat);
+    qy7_gps_put_coordinate(&s->tx[6], s->lon);
     qemu_get_timedate(&now, 0);
     year = now.tm_year + 1900;
     month = now.tm_mon + 1;
@@ -154,6 +169,14 @@ void clarion_qy7_gps_set_sink(DeviceState *dev, ClarionQy7GpsSink fn,
         timer_mod(s->tx_timer,
                   qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + QY7_GPS_BYTE_NS);
     }
+}
+
+void clarion_qy7_gps_set_position(DeviceState *dev, double lat, double lon)
+{
+    ClarionQy7GpsState *s = CLARION_QY7_GPS(dev);
+
+    s->lat = lat;
+    s->lon = lon;
 }
 
 void clarion_qy7_gps_rx_byte(DeviceState *dev, uint8_t byte)
