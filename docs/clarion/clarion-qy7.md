@@ -194,6 +194,48 @@ needed. For manual use, `-plugin PATH,image=NOR[,image=SD],out=FILE` performs
 the same scan; `syms=FILE` remains available as a fallback for explicit
 address lists.
 
+## Debugging with a host debugger
+
+Pausing the QEMU process with a host debugger while the guest is idle can let
+the virtual clock catch up when execution resumes if `-icount` uses its
+default `sleep=on`. On QY7 this can expire the modeled watchdog and make the
+launcher print `power cycle; restarting QEMU`. This is a watchdog reset, not
+the guest OFFP power-off path.
+
+The QY7 watchdog is mapped at `0xFFCC0000` and uses `QEMU_CLOCK_VIRTUAL`.
+Its default `wdt-pclk` is a provisional 24 MHz value, based on the documented
+EXTAL frequency because the QY7 watchdog Pck has not been measured. With the
+guest's observed watchdog settings this gives an estimated 4.38-second
+timeout; the guest feeds it at about 3-second intervals.
+
+In T290, five-second host-debugger stops with `wdt=on` caused a watchdog
+power-cycle in 3/3 runs with the wrapper's `-icount shift=2` (the default
+`sleep=on`). With `-icount shift=2,sleep=off`, 0/3 runs power-cycled. A
+shorter one-second stop passed in one recorded control, so a short
+stop is not a guarantee: the watchdog's phase matters. The `qy7_wdt_timeout`
+trace event appeared before each observed restart in the five-second default
+`icount` controls.
+
+For host-debugger sessions, use:
+
+```sh
+build-release/qemu-clarion -machine clarion-qy7 -icount shift=2,sleep=off NOR SD
+```
+
+The equivalent machine property `-machine clarion-qy7,wdt=off` freezes the
+watchdog, but changes guest runtime conditions; identify it in test reports.
+The machine help lists `wdt` as a boolean, defaulting to on, and `wdt-pclk` as
+a frequency in Hz. To check for a watchdog expiry, enable its trace event:
+
+```sh
+-trace enable=qy7_wdt_timeout,file=wdt.trace
+```
+
+With `sleep=off`, virtual time jumps to the next timer deadline as soon as
+the guest CPU idles, without waiting for the corresponding wall-clock
+interval. Guest timeouts may therefore elapse faster than real time during
+idle periods; account for this when interpreting debugger runs.
+
 ## QY7 power-off and process restart
 
 The micom frame `11 0d 00 01 00 00 40 20` is ordinary boot traffic and is
