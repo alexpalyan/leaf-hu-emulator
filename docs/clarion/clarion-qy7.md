@@ -13,6 +13,38 @@ Omit `--headless` to use the display window. The QY7 guest takes longer to
 reach its display than the QY8 guest. The machine connects its display
 microcontroller to SCIF3; panel input is represented as guest protocol frames.
 
+## Speed pulse input
+
+The QY7 SPDPLS model uses the vehicle's `speed-kmh` property (default `0`,
+which emits no speed pulses). Each pulse increments SPDPLS `INTcount` at
+`+0x010` and raises the modeled INT2 bit 22 input. The guest's INT2 mask-set
+and mask-clear register writes acknowledge and unmask the source; the exact
+hardware re-unmask path is not established by the inspected firmware, so this
+uses the minimal register-level behavior as an assumption. The firmware's
+pulses-per-kilometre calibration was not found, so `vehicle-pulses-per-km`
+is a separate estimated vehicle parameter, defaulting to 2500. Both options
+belong to the machine's vehicle configuration, while SPDPLS remains a SoC
+device. Select the vehicle properties on the machine:
+
+| SPDPLS offset | Model behavior | Evidence status |
+|---|---|---|
+| `+0x00c` | Returns pulse count accumulated in a 100 ms window. | Inference from the firmware accessor name `Get100LatchData`; exact latch semantics remain unknown. |
+| `+0x010` | Cumulative pulse counter; each synthesized pulse increments it. | Proven by the firmware accessor and builder use. |
+| `+0x104` | Returns zero. | Firmware reads it; no source or initialization value was identified. |
+| `+0x110` | Returns zero. | Firmware reads it; no source or initialization value was identified. |
+
+```sh
+build-release/qemu-clarion --read-only --headless \
+    -M clarion-qy7,speed-kmh=60,vehicle-pulses-per-km=2500 \
+    qy7-nor.bin map-card.img
+```
+
+The estimate is not a QY7 firmware or hardware specification. `speed-kmh` is
+one machine-level vehicle property, so it can be shared by hardware and GPS
+models. The current GPS receiver emits time-only frames and does not read or
+transmit speed; this change does not add speed fields to its protocol. With
+the default zero speed, SPDPLS does not schedule pulse or latch timers.
+
 ## Front-panel keys
 
 QEMU key-down and key-up events become command `0x34` frames. The high bit in

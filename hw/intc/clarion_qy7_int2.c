@@ -65,6 +65,8 @@
                            INT2_DISPLAY_SOURCES + INT2_SDHI_SOURCES + \
                            2 + INT2_SCIF_CHANNELS + 1)
 #define INT2_EXTIRQ_INDEX (INT2_SOURCE_COUNT - 1)
+#define INT2_BIT22_INDEX INT2_SOURCE_COUNT
+#define INT2_TOTAL_SOURCE_COUNT (INT2_SOURCE_COUNT + 1)
 #define INT2_EXTIRQ_GROUP_BIT 18
 #define INT2_EXTIRQ_PRIORITY 11
 /*
@@ -91,7 +93,7 @@ struct ClarionQy7Int2 {
     MemoryRegion iomem;
     CPUState *cpu;
     struct intc_desc desc;
-    struct intc_source src[INT2_SOURCE_COUNT];
+    struct intc_source src[INT2_TOTAL_SOURCE_COUNT];
     qemu_irq tmu_irq[INT2_TMU_CHANNELS];
     qemu_irq hpb_irq[INT2_HPB_CHANNELS];
     uint32_t prio[2];
@@ -110,6 +112,8 @@ struct ClarionQy7Int2 {
     bool rcan_pending;
     qemu_irq extirq;
     bool extirq_pending;
+    bool bit22_pending;
+    qemu_irq bit22_irq;
     qemu_irq scif_irq[INT2_SCIF_CHANNEL_COUNT];
     uint32_t scif_pending;
     uint32_t unk[INT2_UNK_SLOTS];
@@ -202,6 +206,14 @@ static void int2_update(ClarionQy7Int2 *s)
         source->priority = INT2_EXTIRQ_PRIORITY;
         source->pending = s->extirq_pending &&
                           !(s->mask & BIT(INT2_EXTIRQ_GROUP_BIT));
+        pending += source->pending;
+    }
+    {
+        struct intc_source *source = &s->src[INT2_BIT22_INDEX];
+
+        source->vect = 0x760;
+        source->priority = INT2_QY7_PRIORITY;
+        source->pending = s->bit22_pending && !(s->mask & BIT(22));
         pending += source->pending;
     }
     s->desc.pending = pending;
@@ -311,6 +323,17 @@ static void int2_extirq_set(void *opaque, int n, int level)
     int2_update(s);
 }
 
+static void int2_bit22_set(void *opaque, int n, int level)
+{
+    ClarionQy7Int2 *s = opaque;
+
+    (void)n;
+    if (level) {
+        s->bit22_pending = true;
+        int2_update(s);
+    }
+}
+
 static void int2_scif_set(void *opaque, int n, int level)
 {
     ClarionQy7Int2 *s = opaque;
@@ -330,7 +353,8 @@ static uint64_t int2_reg_read(ClarionQy7Int2 *s, hwaddr addr)
     case INT2_PRIO1:
         return s->prio[1];
     case 0x3c:
-        return (s->scif_pending ? BIT(INT2_SCIF_GROUP_BIT) : 0) |
+        return (s->bit22_pending ? BIT(22) : 0) |
+               (s->scif_pending ? BIT(INT2_SCIF_GROUP_BIT) : 0) |
                (s->sdhi_pending ? BIT(29) : 0) |
                (s->uart_pending ? BIT(INT2_UART_GROUP_BIT) : 0) |
                (s->rcan_pending ? BIT(INT2_RCAN_GROUP_BIT) : 0);
@@ -368,6 +392,9 @@ static void int2_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
         break;
     case INT2_MASK_SET:
         s->mask |= val;
+        if (val & BIT(22)) {
+            s->bit22_pending = false;
+        }
         break;
     case INT2_MASK_CLR:
         s->mask &= ~val;
@@ -400,6 +427,7 @@ static void int2_reset(void *opaque)
      */
     s->mask = 0xffffffff;
     s->prio[0] = s->prio[1] = 0;
+    s->bit22_pending = false;
     s->hpb_pending = 0;
     s->g2d_pending = false;
     s->du_pending = false;
@@ -422,11 +450,14 @@ ClarionQy7Int2 *clarion_qy7_int2_init(MemoryRegion *sysmem, hwaddr base,
     };
 
     s->cpu = cpu;
-    s->desc.nr_sources = INT2_SOURCE_COUNT;
+    s->desc.nr_sources = INT2_TOTAL_SOURCE_COUNT;
     s->desc.sources = s->src;
-    for (int i = 0; i < INT2_SOURCE_COUNT; i++) {
+    for (int i = 0; i < INT2_TOTAL_SOURCE_COUNT; i++) {
         s->src[i].parent = &s->desc;
-        if (i < INT2_TMU_CHANNELS) {
+        if (i == INT2_BIT22_INDEX) {
+            s->src[i].vect = 0x760;
+            s->src[i].priority = INT2_QY7_PRIORITY;
+        } else if (i < INT2_TMU_CHANNELS) {
             s->src[i].vect = vect[i];
         } else if (i == INT2_RCAN_INDEX) {
             s->src[i].vect = 0x200 + INT2_RCAN_SLOT * 0x20;
@@ -455,6 +486,7 @@ ClarionQy7Int2 *clarion_qy7_int2_init(MemoryRegion *sysmem, hwaddr base,
     s->uart_irq = qemu_allocate_irq(int2_uart_set, s, 0);
     s->rcan_irq = qemu_allocate_irq(int2_rcan_set, s, 0);
     s->extirq = qemu_allocate_irq(int2_extirq_set, s, 0);
+    s->bit22_irq = qemu_allocate_irq(int2_bit22_set, s, 0);
     memory_region_init_io(&s->iomem, NULL, &int2_ops, s, "qy7.int2",
                           INT2_SIZE);
     memory_region_add_subregion(sysmem, base, &s->iomem);
@@ -515,4 +547,9 @@ qemu_irq clarion_qy7_int2_rcan_irq(ClarionQy7Int2 *s)
 qemu_irq clarion_qy7_int2_extirq(ClarionQy7Int2 *s)
 {
     return s->extirq;
+}
+
+qemu_irq clarion_qy7_int2_bit22_irq(ClarionQy7Int2 *s)
+{
+    return s->bit22_irq;
 }

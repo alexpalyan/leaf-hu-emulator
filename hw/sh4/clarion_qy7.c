@@ -20,6 +20,7 @@
 #include "hw/misc/clarion_rcan.h"
 #include "hw/misc/clarion_bcm.h"
 #include "hw/misc/clarion_qy7_gps.h"
+#include "hw/misc/clarion_qy7_spdpls.h"
 #include "hw/misc/clarion_boards.h"
 #include "hw/display/clarion_du.h"
 #include "hw/display/clarion_2dg.h"
@@ -95,6 +96,8 @@ typedef struct QY7MachineState {
     MachineState parent_obj;
     uint8_t dipsw;
     uint32_t wdt_pclk_hz;
+    uint32_t speed_kmh;
+    uint32_t vehicle_pulses_per_km;
     bool wdt_enabled;
     uint16_t status0_inputs;
     bool extint_model;
@@ -109,6 +112,7 @@ typedef struct QY7MachineState {
     bool gps_rollover;
     uint8_t gps_status;
     DeviceState *gps;
+    ClarionQy7Spdpls *spdpls;
     char *can_log_path;
     char *can_replay_path;
     DeviceState *scpu;
@@ -191,6 +195,8 @@ static void qy7_machine_instance_init(Object *obj)
 
     s->dipsw = CLARION_QY7_DEFAULT_DIPSW;
     s->wdt_pclk_hz = QY7_WDT_PCLK;
+    s->speed_kmh = 0;
+    s->vehicle_pulses_per_km = 2500;
     s->wdt_enabled = true;
     /* Assumed asserted PowerMonitor input levels (STATUS0 bits 7 and 9). */
     s->status0_inputs = 0x0280;
@@ -647,6 +653,9 @@ static void qy7_init(MachineState *machine)
     }
     int2 = clarion_qy7_int2_init(sysmem, QY7_INT2_BASE, CPU(cpu),
                                  &cpu->env.intc_handle);
+    qmachine->spdpls = clarion_qy7_spdpls_init(
+        sysmem, 0xffc5b000, clarion_qy7_int2_bit22_irq(int2),
+        qmachine->speed_kmh, qmachine->vehicle_pulses_per_km);
     dmac = qdev_new(TYPE_CLARION_HPBDMA);
     qdev_prop_set_bit(dmac, "qy7-mode", true);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dmac), &error_fatal);
@@ -927,6 +936,18 @@ static void qy7_machine_class_init(ObjectClass *oc, const void *data)
         OBJ_PROP_FLAG_READWRITE);
     object_class_property_set_description(oc, "wdt",
         "Enable QY7 WDT counting (default on; off freezes the WDT timer)");
+    object_class_property_add_uint32_ptr(
+        oc, "speed-kmh", offsetof(QY7MachineState, speed_kmh),
+        OBJ_PROP_FLAG_READWRITE);
+    object_class_property_set_description(oc, "speed-kmh",
+        "Synthetic vehicle speed for the SPDPLS model (default 0 km/h)");
+    object_class_property_add_uint32_ptr(
+        oc, "vehicle-pulses-per-km",
+        offsetof(QY7MachineState, vehicle_pulses_per_km),
+        OBJ_PROP_FLAG_READWRITE);
+    object_class_property_set_description(oc, "vehicle-pulses-per-km",
+        "Estimated vehicle pulse calibration in pulses/km; firmware constant "
+        "unknown (default estimate 2500)");
     object_class_property_add_uint16_ptr(
         oc, "status0-inputs", offsetof(QY7MachineState, status0_inputs),
         OBJ_PROP_FLAG_READWRITE);

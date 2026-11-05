@@ -22,6 +22,7 @@ system_ss.add(when: 'CONFIG_CLARION_QY8', if_true: files('clarion_shcore.c'))
 system_ss.add(when: 'CONFIG_CLARION_QY7', if_true: files(
   'clarion_qy7_regs.c',
   'clarion_rcan.c',
+  'clarion_qy7_spdpls.c',
 ))
 
 # Mac devices
