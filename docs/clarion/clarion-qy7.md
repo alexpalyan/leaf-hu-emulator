@@ -64,6 +64,25 @@ to be the two-axis G-sensor, consistent with the firmware string
 input. These physical roles are not proven. Initialization writes are
 accepted and logged with `LOG_UNIMP`.
 
+## Reverse and illumination inputs
+
+`navdrv` maps the board STATUS1 register (`0x19800000`, uncached alias
+`0xB9800000`, `navdrv.dll:0x03CD6BEC`) and keeps its low three bits as the
+"IPR" signal word (`SensorThread`, `0x03CD6A56–0x03CD6A5E`; the word is split
+into ILL, bit 0 and bit 2 fields by `0x03CD5F58`).  The word is read once
+when the sensor thread starts and again on each IPR event; the model does not
+raise that event, so changes made after boot may not be sampled.  Set the
+properties on the command line.
+
+| STATUS1 bit | Property | Polarity | Evidence |
+|---|---|---|---|
+| 0 | `reverse` (default off) | active low | Boot A/B with only this bit changed: bit 0 clear makes the Navi dead-reckoning step run opposite to the arrow (about 180 degrees); bit 0 set makes it follow the arrow. The direction decision itself is in `Navi.exe`; `navdrv` only forwards the bit. |
+| 1 | `illumination` (default off) | active low | `InitIllSetting` (`0x03CD690C`) in auto mode derives ILL as `~(signal >> 1) & 1`; with the bit clear the map uses the night palette once movement starts. |
+| 2 | not modelled (reads 0) | unknown | Boot A/B (bit 2 set or clear): no visible effect on direction or palette. |
+
+STATUS1 therefore reads `0x0013` by default (bit 4 is the previous constant).
+Before this change bits 0 and 1 read as zero, which asserted both inputs.
+
 ## Speed pulse input
 
 The QY7 SPDPLS model uses the vehicle's `speed-kmh` property (default `0`,

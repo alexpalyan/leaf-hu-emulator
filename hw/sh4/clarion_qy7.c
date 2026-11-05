@@ -105,6 +105,8 @@ typedef struct QY7MachineState {
     uint32_t gyro_raw;
     bool wdt_enabled;
     uint16_t status0_inputs;
+    bool reverse;
+    bool illumination;
     bool extint_model;
     bool paired_card;
     bool micom_on;
@@ -695,6 +697,26 @@ static void qy7_set_extint_model(Object *obj, bool value, Error **errp)
     ((QY7MachineState *)obj)->extint_model = value;
 }
 
+static bool qy7_get_reverse(Object *obj, Error **errp)
+{
+    return ((QY7MachineState *)obj)->reverse;
+}
+
+static void qy7_set_reverse(Object *obj, bool value, Error **errp)
+{
+    ((QY7MachineState *)obj)->reverse = value;
+}
+
+static bool qy7_get_illumination(Object *obj, Error **errp)
+{
+    return ((QY7MachineState *)obj)->illumination;
+}
+
+static void qy7_set_illumination(Object *obj, bool value, Error **errp)
+{
+    ((QY7MachineState *)obj)->illumination = value;
+}
+
 static void qy7_set_micom_generic_reply(Object *obj, bool value, Error **errp)
 {
     ((QY7MachineState *)obj)->micom_generic_reply = value;
@@ -871,6 +893,7 @@ static void qy7_init(MachineState *machine)
     memory_region_add_subregion(sysmem, QY7_RAM_BASE, ram);
     clarion_qy7_regs_init(sysmem, qmachine->dipsw,
                           qmachine->status0_inputs,
+                          &qmachine->reverse, &qmachine->illumination,
                           qmachine->extint_model,
                           clarion_qy7_int2_extirq(int2));
 
@@ -1138,6 +1161,17 @@ static void qy7_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_add_uint16_ptr(
         oc, "status0-inputs", offsetof(QY7MachineState, status0_inputs),
         OBJ_PROP_FLAG_READWRITE);
+    object_class_property_add_bool(oc, "reverse", qy7_get_reverse,
+                                   qy7_set_reverse);
+    object_class_property_set_description(oc, "reverse",
+        "Reverse gear input (STATUS1 bit 0, active low) as seen by navdrv "
+        "(default off)");
+    object_class_property_add_bool(oc, "illumination",
+                                   qy7_get_illumination,
+                                   qy7_set_illumination);
+    object_class_property_set_description(oc, "illumination",
+        "Illumination (lights) input (STATUS1 bit 1, active low) as seen by "
+        "navdrv (default off)");
     object_class_property_add_bool(oc, "extint-model",
                                    qy7_get_extint_model,
                                    qy7_set_extint_model);
