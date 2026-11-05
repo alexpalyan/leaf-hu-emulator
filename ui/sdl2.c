@@ -177,7 +177,6 @@ static void sdl2_redraw(struct sdl2_console *scon)
 static void sdl_update_caption(struct sdl2_console *scon)
 {
     char win_title[1024];
-    char icon_title[1024];
     const char *status = "";
 
     if (!runstate_is_running()) {
@@ -201,12 +200,10 @@ static void sdl_update_caption(struct sdl2_console *scon)
     }
 
     if (qemu_name) {
-        snprintf(win_title, sizeof(win_title), "QEMU (%s-%d)%s", qemu_name,
-                 scon->idx, status);
-        snprintf(icon_title, sizeof(icon_title), "QEMU (%s)", qemu_name);
+        snprintf(win_title, sizeof(win_title), "Leaf HU Emulator %s%s",
+                 qemu_name, status);
     } else {
-        snprintf(win_title, sizeof(win_title), "QEMU%s", status);
-        snprintf(icon_title, sizeof(icon_title), "QEMU");
+        snprintf(win_title, sizeof(win_title), "Leaf HU Emulator%s", status);
     }
 
     if (scon->real_window) {
@@ -988,16 +985,14 @@ static void sdl2_display_init(DisplayState *ds, DisplayOptions *o)
     }
 
 #ifdef CONFIG_SDL_IMAGE
-    dir = get_relocated_path(CONFIG_QEMU_ICONDIR "/hicolor/128x128/apps/qemu.png");
+    dir = get_relocated_path(CONFIG_QEMU_ICONDIR
+                             "/hicolor/128x128/apps/leaf-hu-emulator.png");
     icon = IMG_Load(dir);
 #else
-    /* Load a 32x32x4 image. White pixels are transparent. */
-    dir = get_relocated_path(CONFIG_QEMU_ICONDIR "/hicolor/32x32/apps/qemu.bmp");
+    /* Load the alpha-enabled 32x32 bitmap. */
+    dir = get_relocated_path(CONFIG_QEMU_ICONDIR
+                             "/hicolor/32x32/apps/leaf-hu-emulator.bmp");
     icon = SDL_LoadBMP(dir);
-    if (icon) {
-        uint32_t colorkey = SDL_MapRGB(icon->format, 255, 255, 255);
-        SDL_SetColorKey(icon, SDL_TRUE, colorkey);
-    }
 #endif
     g_free(dir);
     if (icon) {

@@ -1,8 +1,8 @@
 [Desktop Entry]
 Version=1.0
-Name=QEMU
-Icon=qemu
+Name=Leaf HU Emulator
+Exec=qemu-clarion
+Icon=leaf-hu-emulator
 Type=Application
 Terminal=false
 Keywords=Emulators;Virtualization;KVM;
-NoDisplay=true

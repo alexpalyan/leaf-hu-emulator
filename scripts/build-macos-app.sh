@@ -20,6 +20,10 @@ macos="$contents/MacOS"
 mkdir -p "$macos" "$contents/Resources"
 cp "$script_dir/macos-app/Info.plist" "$contents/Info.plist"
 cp "$script_dir/macos-app/AppIcon.icns" "$contents/Resources/AppIcon.icns"
+if [ -d "$binary_dir/share/icons" ]; then
+    cp -R "$binary_dir/share/icons" "$contents/Resources/"
+    ln -sfn "$contents/Resources/share" "$macos/share"
+fi
 cp "$binary" "$macos/qemu-clarion"
 chmod 755 "$macos/qemu-clarion"
 if [ -d "$binary_dir/libexec" ]; then

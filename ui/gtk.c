@@ -234,9 +234,9 @@ static void gd_update_caption(GtkDisplayState *s)
     int i;
 
     if (qemu_name) {
-        prefix = g_strdup_printf("QEMU (%s)", qemu_name);
+        prefix = g_strdup_printf("Leaf HU Emulator %s", qemu_name);
     } else {
-        prefix = g_strdup_printf("QEMU");
+        prefix = g_strdup_printf("Leaf HU Emulator");
     }
 
     if (s->ptr_owner != NULL &&
@@ -2798,7 +2798,7 @@ static void gtk_display_init(DisplayState *ds, DisplayOptions *opts)
     dir = get_relocated_path(CONFIG_QEMU_ICONDIR);
     gtk_icon_theme_prepend_search_path(theme, dir);
     g_free(dir);
-    g_set_prgname("qemu");
+    g_set_prgname("leaf-hu-emulator");
 
     s->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     s->vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
@@ -2831,7 +2831,7 @@ static void gtk_display_init(DisplayState *ds, DisplayOptions *opts)
     qemu_add_mouse_mode_change_notifier(&s->mouse_mode_notifier);
     s->vmse = qemu_add_vm_change_state_handler(gd_change_runstate, s);
 
-    gtk_window_set_icon_name(GTK_WINDOW(s->window), "qemu");
+    gtk_window_set_icon_name(GTK_WINDOW(s->window), "leaf-hu-emulator");
 
     gd_create_menus(s, opts);
 

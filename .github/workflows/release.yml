@@ -36,6 +36,7 @@ jobs:
               libglib2.0-dev libpixman-1-dev libgnutls28-dev libcapstone-dev \
               libslirp-dev libssh-dev libusb-1.0-0-dev libzstd-dev libpng-dev \
               libsnappy-dev liblzo2-dev libsdl2-dev flex bison patchelf
+          sudo apt-get install -y --no-install-recommends xvfb xdotool x11-utils
 
       - name: Configure
         run: |
@@ -66,6 +67,31 @@ jobs:
           mkdir smoke
           tar -C smoke -xzf "${{ steps.pkg.outputs.archive }}"
           cd smoke/qemu-clarion-*
+          test -f share/applications/leaf-hu-emulator.desktop
+          grep -Fx 'Name=Leaf HU Emulator' share/applications/leaf-hu-emulator.desktop
+          grep -Fx 'Exec=qemu-clarion' share/applications/leaf-hu-emulator.desktop
+          grep -Fx 'Icon=leaf-hu-emulator' share/applications/leaf-hu-emulator.desktop
+          cmp "$GITHUB_WORKSPACE/ui/icons/leaf-hu-emulator_128x128.png" \
+              share/icons/hicolor/128x128/apps/leaf-hu-emulator.png
+          cmp "$GITHUB_WORKSPACE/ui/icons/leaf-hu-emulator_32x32.bmp" \
+              share/icons/hicolor/32x32/apps/leaf-hu-emulator.bmp
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a bash -euc '
+              libexec/qemu-system-arm -M none -display sdl -S \
+                -name "MODEL: TEST - DSW: 7" > /tmp/leaf-hu-sdl.log 2>&1 &
+              qemu_pid=$!
+              trap "kill $qemu_pid 2>/dev/null || true; wait $qemu_pid 2>/dev/null || true" EXIT
+              window=
+              for _ in $(seq 1 50); do
+                window=$(xdotool search --onlyvisible \
+                  --name "^Leaf HU Emulator MODEL: TEST - DSW: 7$" 2>/dev/null | head -n 1 || true)
+                [ -n "$window" ] && break
+                sleep 0.1
+              done
+              [ -n "$window" ]
+              xprop -id "$window" WM_HINTS
+            '
+          fi
           # The launcher prints usage and exits non-zero without arguments.
           ./qemu-clarion 2>&1 | grep -i usage
           ./qemu-clarion --help 2>&1 | grep -- --identify
