@@ -1,4 +1,4 @@
-#include "config-host.h"
+#include "qemu/osdep.h"
 #include <errno.h>
 #include <glib.h>
 #include <glib/gstdio.h>
@@ -178,6 +178,57 @@ static gboolean install_signal_forwarding(void)
         }
     }
     return TRUE;
+}
+
+static gboolean has_name_argument(int argc, char **argv)
+{
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "-name") || g_str_has_prefix(argv[i], "-name=")) {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+static int requested_dipsw(int argc, char **argv, int fallback)
+{
+    int dipsw = fallback;
+
+    for (int i = 0; i < argc; i++) {
+        const char *machine = NULL;
+
+        if ((!strcmp(argv[i], "-machine") || !strcmp(argv[i], "-M")) &&
+            i + 1 < argc) {
+            machine = argv[++i];
+        } else if (g_str_has_prefix(argv[i], "-machine=")) {
+            machine = argv[i] + strlen("-machine=");
+        } else if (g_str_has_prefix(argv[i], "-M=")) {
+            machine = argv[i] + strlen("-M=");
+        }
+        if (machine) {
+            const char *property = strstr(machine, "dipsw=");
+            const char *value;
+            char *end;
+            long long requested;
+
+            if (g_str_has_prefix(machine, "clarion-qy7")) {
+                dipsw = CLARION_QY7_DEFAULT_DIPSW;
+            } else if (g_str_has_prefix(machine, "clarion-qy8")) {
+                dipsw = CLARION_QY8_DEFAULT_DIPSW;
+            }
+            if (!property || (property != machine && property[-1] != ',')) {
+                continue;
+            }
+            value = property + strlen("dipsw=");
+            requested = g_ascii_strtoll(value, &end, 10);
+            if (end != value &&
+                (*end == '\0' || *end == ',') &&
+                requested >= 0 && requested <= 7) {
+                dipsw = requested;
+            }
+        }
+    }
+    return dipsw;
 }
 
 static int run_supervised(char **args)
@@ -452,7 +503,7 @@ int main(int argc, char **argv)
         flash_drive = nor_overlay;
         sd_drive = sd_overlay;
     }
-    args = g_new0(char *, argc + 14);
+    args = g_new0(char *, argc + 18);
     args[arg_count++] = emulator;
     args[arg_count++] = (char *)"-M";
     args[arg_count++] = (char *)board->machine;
@@ -482,6 +533,14 @@ int main(int argc, char **argv)
         !has_argument(argc - first_arg, argv + first_arg, "-icount")) {
         args[arg_count++] = (char *)"-icount";
         args[arg_count++] = (char *)board->icount;
+    }
+    if (!has_name_argument(argc - first_arg, argv + first_arg)) {
+        g_autofree char *name = g_strdup_printf("MODEL: %s - DSW: %d", model,
+            requested_dipsw(argc - first_arg, argv + first_arg,
+                            board->default_dipsw));
+
+        args[arg_count++] = (char *)"-name";
+        args[arg_count++] = g_steal_pointer(&name);
     }
     if (dbgprint) {
         g_autofree char *plugin_path = find_dbgprint_plugin(directory);

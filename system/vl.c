@@ -23,6 +23,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/leaf_hu_emulator.h"
 #include "qemu/help-texts.h"
 #include "qemu/datadir.h"
 #include "qemu/units.h"
@@ -877,7 +878,7 @@ static MachineClass *find_default_machine(GSList *machines)
 
 static void version(void)
 {
-    printf("QEMU emulator version " QEMU_FULL_VERSION "\n"
+    printf("Leaf HU Emulator version " LEAF_HU_EMULATOR_VERSION "\n"
            QEMU_COPYRIGHT "\n");
 }
 
