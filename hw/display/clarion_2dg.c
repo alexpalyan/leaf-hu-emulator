@@ -72,6 +72,7 @@
 #define M2DG_F_LINE_IND 0x4000
 #define M2DG_F_WPR_IND 0x0400
 #define M2DG_F_STRANS 0x0800
+#define M2DG_F_WCLIP 0x1000
 #define M2DG_F_SRC_IN_LIST 0x0080 /* Observed on inline BITBLTA and POLY4T. */
 
 /* List registers (byte offsets). */
@@ -126,6 +127,7 @@ typedef struct ListCtx {
      * case below.  Reset for every list.
      */
     int ox, oy;
+    bool wclip;
     /* Clip rectangle and clip path set by 0xe0 / 0xd0, one-shot. */
     bool rc_on;
     int rx0, ry0, rx1, ry1;
@@ -224,7 +226,8 @@ static bool clarion_2dg_clip(ListCtx *c, int *x0, int *y0, int *x1, int *y1)
     *y0 = 0;
     *x1 = MIN((int)(sys >> 16), (int)c->dst_stride - 1);
     *y1 = MIN((int)(sys & 0xffff), (int)c->dst_h - 1);
-    if (s->lreg_set[M2DG_R_CLIP_MIN / 4] && s->lreg_set[M2DG_R_CLIP_MAX / 4]) {
+    if (c->wclip && s->lreg_set[M2DG_R_CLIP_MIN / 4] &&
+        s->lreg_set[M2DG_R_CLIP_MAX / 4]) {
         uint32_t mn = s->lreg[M2DG_R_CLIP_MIN / 4];
         uint32_t mx = s->lreg[M2DG_R_CLIP_MAX / 4];
 
@@ -959,6 +962,7 @@ static unsigned clarion_2dg_run(Clarion2DGState *s, hwaddr list,
             break;
         }
         op = w >> 24;
+        c->wclip = w & M2DG_F_WCLIP;
         if (s->diag_path) {
             int64_t now = g_get_monotonic_time();
 

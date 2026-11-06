@@ -54,7 +54,7 @@ the same command line is merged with the first.
 | `micom` | `on` | built-in companion MCU on SCIF4; `off` lets you attach your own responder via `-serial` |
 | `dispmicom` | `on` | built-in display panel MCU on SCIF1; `off` works the same way |
 | `gps` | `on` | built-in u-blox GNSS receiver on SCIF2; `off` leaves SCIF2 on `-serial` index 3 |
-| `g2d` | `on` | minimal 2DG blitter model: completes blits for the guest driver, draws nothing; `off` leaves the block unmodelled |
+| `g2d` | `on` | modeled 2DG command-list drawing and synthetic completion; `off` leaves the block unmodelled |
 | `g2d-log` | unset | file that receives one JSON line per 2DG start (list address, first 256 words) |
 | `can-log` | unset | append CAN frames and mode/filter changes using guest virtual milliseconds |
 | `can-replay` | unset | file of periodic `period_ms ID#DATA` receive frames |
@@ -121,13 +121,20 @@ guest RTC, so `-rtc base=...` makes runs reproducible.
 
 ### 2DG blitter
 
-The `clarion-2dg` model is mapped at `0xffe80000` and provides the register
-readback, synthetic blit completion interrupt, and command-list diagnostics
-needed by the guest driver. It does not execute the command list or draw
-pixels. Completion follows a synthetic 1 ms virtual-clock delay; the
-`+0x0c` bit 0 interrupt-enable interpretation is also synthetic. The model
-is enabled by default and can be disabled with
+The `clarion-2dg` model is mapped at `0xffe80000`. It reads command lists,
+executes the currently modeled drawing operations, provides register
+readback, and raises a synthetic blit-completion interrupt. Completion follows
+a synthetic 1 ms virtual-clock delay; the `+0x0c` bit 0 interrupt-enable
+interpretation is also synthetic. The model is enabled by default and can be
+disabled with
 `-M clarion-qy8,g2d=off` (or `QY8_G2D=off` with `tools/qy8_run.sh`).
+
+For drawing commands, the persistent window clip registers
+(`CLIP_MIN`/`CLIP_MAX`) are applied only when the command header carries
+`M2DG_F_WCLIP` (`0x1000`). The system clip remains active for every command;
+one-shot `CLIPRECT` and `CLIPPATH` handling is independent of the window-clip
+flag. This behavior is inferred from QY7 command-list diagnostics and is an
+emulator model, not a hardware specification.
 
 Set `g2d-log=/path/to/file.jsonl` to append one JSON record per start,
 including the virtual-clock timestamp, list address, and first 256 words.

@@ -239,6 +239,15 @@ The `PostMessageW` branch targets the HWND stored in KEPDRV's context and
 posts `WM_KEYDOWN`/`WM_KEYUP` with the translated VK. The window's application
 identity was not recovered from the available runtime state.
 
+## 2DG window clipping
+
+The 2DG model intersects a command's destination with the persistent window
+clip registers (`CLIP_MIN`/`CLIP_MAX`) only when that command header carries
+`M2DG_F_WCLIP` (`0x1000`). The system clip remains active for every command;
+the one-shot `CLIPRECT` and `CLIPPATH` handling is independent of this flag.
+This behavior is inferred from QY7 command-list diagnostics and is an emulator
+model, not a hardware specification.
+
 ## Verified MCAN routes
 
 These rows record guest-visible mappings from read-only QY7 captures. They do
