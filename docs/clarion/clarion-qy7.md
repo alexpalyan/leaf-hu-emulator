@@ -102,6 +102,7 @@ device. Select the vehicle properties on the machine:
 |---|---|---|
 | `+0x00c` | Returns pulse count accumulated in a 100 ms window. | Inference from the firmware accessor name `Get100LatchData`; exact latch semantics remain unknown. |
 | `+0x010` | Cumulative pulse counter; each synthesized pulse increments it. | Proven by the firmware accessor and builder use. |
+| `+0x01c` | Returns zero in the current model. | `navdrv` has a `Get500Kfreq` accessor, but its 36-byte NAV1 builder does not read this register. The firmware-side role remains unknown. |
 | `+0x104` | Returns zero. | Firmware reads it; no source or initialization value was identified. |
 | `+0x110` | Returns zero. | Firmware reads it; no source or initialization value was identified. |
 
@@ -119,35 +120,34 @@ the default zero speed, SPDPLS does not schedule pulse or latch timers.
 
 ## Driving the vehicle
 
-The machine-level vehicle model integrates GPS position, heading, and
-distance on a 10 Hz `QEMU_CLOCK_VIRTUAL` timer. `drive` defaults to `on`;
-setting it to `off` leaves the synthesized GPS position and gyro unchanged.
-`speed-kmh` controls SPDPLS and vehicle movement. `heading` is the target
-course in degrees clockwise from north (`0` north, `90` east). While moving,
-the model turns toward that target at 20 degrees per second and updates gyro
-ADC0. The estimated calibration is 2500 pulses/km, or 0.4 m per pulse.
+The machine accepts physical speed and yaw rate. `speed-kmh` drives the
+SPDPLS pulse model and advances the read-only `odometer-m` distance. The
+estimated calibration is 2500 pulses/km (0.4 m per pulse). On a 10 Hz
+`QEMU_CLOCK_VIRTUAL` timer, nonzero `yaw-rate` updates gyro ADC0 using
+`Δ = yaw-rate × 0.4 / (4.83e-4 × speed_mps)`, clamped to `|Δ| <= 12000`,
+with `gyro-raw = 0x5000 + Δ`. Positive yaw turns right. At zero speed, a
+nonzero yaw rate sets gyro ADC0 to `0x5000`. With `yaw-rate=0`, manual writes
+to `gyro-raw` remain in effect.
 
-`gps-lat` and `gps-lon` set the current vehicle position. A later change to
-either property relocates the vehicle immediately. `odometer-m` is a
-read-only, cumulative distance in meters since QEMU started; it advances only
-while `drive` is on and `speed-kmh` is above zero.
+GPS coordinates are external inputs and do not move with `speed-kmh` or
+`yaw-rate`. Set the receiver's starting position with `gps-lat` and `gps-lon`
+when launching QEMU; adjust the navigation position or course in the guest
+menu when needed. `odometer-m` is cumulative distance in meters since QEMU
+started.
 
-Use QMP to position the vehicle, select its course and speed, then read its
-distance:
+Set a starting position, then drive straight at 40 km/h and read the distance:
 
 ```json
 {"execute":"qom-set","arguments":{"path":"/machine","property":"gps-lat","value":"59.91"}}
 {"execute":"qom-set","arguments":{"path":"/machine","property":"gps-lon","value":"10.75"}}
-{"execute":"qom-set","arguments":{"path":"/machine","property":"heading","value":90}}
 {"execute":"qom-set","arguments":{"path":"/machine","property":"speed-kmh","value":40}}
 {"execute":"qom-get","arguments":{"path":"/machine","property":"odometer-m"}}
 ```
 
-`tools/gps_track.py` can drive a JSON route using these properties. It sets the
-initial coordinate and course, updates speed and target course at each segment,
-and uses `odometer-m` for distance marks and screenshots. QEMU computes the
-intermediate GPS positions and gyro values itself; the tool does not poll the
-SPDPLS register or synthesize gyro samples.
+`tools/gps_track.py` can drive a JSON route using `speed-kmh`, `yaw-rate`, and
+`odometer-m`. GPS coordinates in the route are used only to calculate segment
+lengths and turn angles; the tool does not write GPS position or synthesize
+gyro ADC values.
 
 ## Front-panel keys
 

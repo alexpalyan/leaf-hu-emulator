@@ -80,12 +80,10 @@
 #define QY7_SCIF3_BASE 0xffe43000
 #define QY7_SCIF5_BASE 0xffe45000
 #define QY7_SCIF7_BASE 0xffe47000
-#define QY7_DRIVE_TICK_NS 100000000
-#define QY7_DRIVE_METERS_PER_PULSE 0.4
-#define QY7_DRIVE_GYRO_ZERO 0x5000
-#define QY7_DRIVE_GYRO_SCALE (0.000483)
-#define QY7_DRIVE_GYRO_MAX_DELTA 12000.0
-#define QY7_EARTH_RADIUS_M 6371000.0
+#define QY7_MOTION_TICK_NS G_GUINT64_CONSTANT(100000000)
+#define QY7_GYRO_ZERO 0x5000
+#define QY7_GYRO_SCALE (0.000483)
+#define QY7_GYRO_MAX_DELTA 12000.0
 #define QY7_SCIF_SCSCR_RE 0x0010
 #define QY7_GYRO_BASE 0xffc5a000
 #define QY7_GYRO_SIZE 0x1000
@@ -109,11 +107,9 @@ typedef struct QY7MachineState {
     uint32_t speed_kmh;
     uint32_t vehicle_pulses_per_km;
     uint32_t gyro_raw;
-    bool drive;
-    double heading_target;
-    double heading_current;
+    double yaw_rate;
     double odometer_m;
-    int64_t drive_last_ns;
+    int64_t motion_last_ns;
     bool wdt_enabled;
     uint16_t status0_inputs;
     bool reverse;
@@ -133,7 +129,7 @@ typedef struct QY7MachineState {
     char *gps_lon;
     DeviceState *gps;
     ClarionQy7Spdpls *spdpls;
-    QEMUTimer *drive_timer;
+    QEMUTimer *motion_timer;
     MemoryRegion gyro;
     MemoryRegion *gyro_a7_alias;
     char *can_log_path;
@@ -157,7 +153,7 @@ typedef struct QY7DispSink {
 
 static void qy7_mcan_refresh(void *opaque);
 static void qy7_mcan_key_timer(void *opaque);
-static void qy7_drive_tick(void *opaque);
+static void qy7_motion_tick(void *opaque);
 static char *qy7_gps_lat_get(Object *obj, Error **errp);
 static void qy7_gps_lat_set(Object *obj, const char *value, Error **errp);
 static char *qy7_gps_lon_get(Object *obj, Error **errp);
@@ -171,108 +167,32 @@ static void qy7_gps_position_update(QY7MachineState *s)
     }
 }
 
-static double qy7_normalize_heading(double heading)
-{
-    heading = fmod(heading, 360.0);
-    return heading < 0.0 ? heading + 360.0 : heading;
-}
-
-static double qy7_heading_difference(double target, double current)
-{
-    double difference = qy7_normalize_heading(target) -
-                        qy7_normalize_heading(current);
-
-    if (difference > 180.0) {
-        difference -= 360.0;
-    } else if (difference < -180.0) {
-        difference += 360.0;
-    }
-    return difference;
-}
-
-static void qy7_gps_set_position(QY7MachineState *s, double latitude,
-                                 double longitude)
-{
-    g_free(s->gps_lat);
-    g_free(s->gps_lon);
-    s->gps_lat = g_strdup_printf("%.8f", latitude);
-    s->gps_lon = g_strdup_printf("%.8f", longitude);
-    qy7_gps_position_update(s);
-}
-
-static void qy7_drive_position_step(QY7MachineState *s, double distance_m,
-                                    double heading_deg)
-{
-    double latitude = g_ascii_strtod(s->gps_lat, NULL) * M_PI / 180.0;
-    double longitude = g_ascii_strtod(s->gps_lon, NULL) * M_PI / 180.0;
-    double bearing = heading_deg * M_PI / 180.0;
-    double angular_distance = distance_m / QY7_EARTH_RADIUS_M;
-    double latitude2 = asin(sin(latitude) * cos(angular_distance) +
-                            cos(latitude) * sin(angular_distance) *
-                            cos(bearing));
-    double longitude2 = longitude + atan2(
-        sin(bearing) * sin(angular_distance) * cos(latitude),
-        cos(angular_distance) - sin(latitude) * sin(latitude2));
-
-    longitude2 = fmod(longitude2 + 3.0 * M_PI, 2.0 * M_PI) - M_PI;
-    qy7_gps_set_position(s, latitude2 * 180.0 / M_PI,
-                         longitude2 * 180.0 / M_PI);
-}
-
-static void qy7_drive_tick(void *opaque)
+static void qy7_motion_tick(void *opaque)
 {
     QY7MachineState *s = opaque;
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    int64_t elapsed_ns = now - s->drive_last_ns;
+    int64_t elapsed_ns = now - s->motion_last_ns;
     double elapsed_s = elapsed_ns > 0 ? elapsed_ns / 1e9 : 0.0;
 
-    s->drive_last_ns = now;
-    if (s->drive && s->speed_kmh && elapsed_s > 0.0) {
-        double distance_m = s->speed_kmh * (elapsed_s / 3.6);
-        double pulses = distance_m / QY7_DRIVE_METERS_PER_PULSE;
-        double difference = qy7_heading_difference(s->heading_target,
-                                                   s->heading_current);
-        double turn_step = CLAMP(difference, -20.0 * elapsed_s,
-                                 20.0 * elapsed_s);
-        double heading_step = 0.0;
-        double travel_heading;
+    s->motion_last_ns = now;
+    if (s->speed_kmh && elapsed_s > 0.0) {
+        s->odometer_m += s->speed_kmh * (elapsed_s / 3.6);
+    }
+    if (s->yaw_rate != 0.0) {
+        if (s->speed_kmh) {
+            double speed_mps = s->speed_kmh / 3.6;
+            double delta = s->yaw_rate * 0.4 /
+                           (QY7_GYRO_SCALE * speed_mps);
 
-        if (fabs(difference) <= 0.5) {
-            s->heading_current = s->heading_target;
-            s->gyro_raw = QY7_DRIVE_GYRO_ZERO;
-        } else if (pulses > 0.0) {
-            double delta = turn_step /
-                           (QY7_DRIVE_GYRO_SCALE * pulses);
-            int gyro_delta;
-            double applied;
-
-            delta = CLAMP(delta, -QY7_DRIVE_GYRO_MAX_DELTA,
-                          QY7_DRIVE_GYRO_MAX_DELTA);
-            gyro_delta = lrint(delta);
-            applied = QY7_DRIVE_GYRO_SCALE * gyro_delta * pulses;
-            if (fabs(difference) <= 20.0 * elapsed_s &&
-                ((difference > 0.0 && applied >= difference) ||
-                 (difference < 0.0 && applied <= difference))) {
-                heading_step = difference;
-                s->heading_current = s->heading_target;
-                s->gyro_raw = QY7_DRIVE_GYRO_ZERO;
-            } else {
-                heading_step = applied;
-                s->heading_current = qy7_normalize_heading(
-                    s->heading_current + heading_step);
-                s->gyro_raw = QY7_DRIVE_GYRO_ZERO + gyro_delta;
-            }
+            delta = CLAMP(delta, -QY7_GYRO_MAX_DELTA,
+                          QY7_GYRO_MAX_DELTA);
+            s->gyro_raw = QY7_GYRO_ZERO + lrint(delta);
+        } else {
+            s->gyro_raw = QY7_GYRO_ZERO;
         }
-
-        travel_heading = qy7_normalize_heading(
-            s->heading_current - heading_step / 2.0);
-        qy7_drive_position_step(s, distance_m, travel_heading);
-        s->odometer_m += distance_m;
-    } else if (s->drive && !s->speed_kmh) {
-        s->gyro_raw = QY7_DRIVE_GYRO_ZERO;
     }
 
-    timer_mod(s->drive_timer, now + QY7_DRIVE_TICK_NS);
+    timer_mod(s->motion_timer, now + QY7_MOTION_TICK_NS);
 }
 
 static uint64_t qy7_gyro_read(void *opaque, hwaddr addr, unsigned int size)
@@ -392,10 +312,8 @@ static void qy7_machine_instance_init(Object *obj)
     s->wdt_pclk_hz = QY7_WDT_PCLK;
     s->speed_kmh = 0;
     s->vehicle_pulses_per_km = 2500;
-    s->gyro_raw = QY7_DRIVE_GYRO_ZERO;
-    s->drive = true;
-    s->heading_target = 90.0;
-    s->heading_current = 90.0;
+    s->gyro_raw = QY7_GYRO_ZERO;
+    s->yaw_rate = 0.0;
     s->odometer_m = 0.0;
     s->wdt_enabled = true;
     /* Assumed asserted PowerMonitor input levels (STATUS0 bits 7 and 9). */
@@ -415,7 +333,7 @@ static void qy7_machine_instance_init(Object *obj)
     s->gps_lon = g_strdup("10.75");
     s->mcan_refresh = timer_new_ns(QEMU_CLOCK_VIRTUAL, qy7_mcan_refresh, s);
     s->mcan_key_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, qy7_mcan_key_timer, s);
-    s->drive_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, qy7_drive_tick, s);
+    s->motion_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, qy7_motion_tick, s);
     object_property_add_uint8_ptr(obj, "micom-generic-reply-subcode",
         &s->micom_generic_reply_subcode, OBJ_PROP_FLAG_READWRITE);
     /*
@@ -540,39 +458,6 @@ static void qy7_set_speed_kmh(Object *obj, Visitor *v, const char *name,
     if (s->spdpls) {
         clarion_qy7_spdpls_set_speed(s->spdpls, speed_kmh);
     }
-    if (s->drive && !speed_kmh) {
-        s->gyro_raw = QY7_DRIVE_GYRO_ZERO;
-    }
-}
-
-static void qy7_get_heading(Object *obj, Visitor *v, const char *name,
-                            void *opaque, Error **errp)
-{
-    QY7MachineState *s = (QY7MachineState *)obj;
-    double heading = s->heading_target;
-
-    (void)opaque;
-    visit_type_number(v, name, &heading, errp);
-}
-
-static void qy7_set_heading(Object *obj, Visitor *v, const char *name,
-                            void *opaque, Error **errp)
-{
-    QY7MachineState *s = (QY7MachineState *)obj;
-    double heading;
-
-    (void)opaque;
-    if (!visit_type_number(v, name, &heading, errp)) {
-        return;
-    }
-    if (!isfinite(heading)) {
-        error_setg(errp, "heading must be a finite number of degrees");
-        return;
-    }
-    s->heading_target = qy7_normalize_heading(heading);
-    if (!s->speed_kmh && s->odometer_m == 0.0) {
-        s->heading_current = s->heading_target;
-    }
 }
 
 static void qy7_get_odometer_m(Object *obj, Visitor *v, const char *name,
@@ -583,6 +468,33 @@ static void qy7_get_odometer_m(Object *obj, Visitor *v, const char *name,
 
     (void)opaque;
     visit_type_number(v, name, &odometer_m, errp);
+}
+
+static void qy7_get_yaw_rate(Object *obj, Visitor *v, const char *name,
+                             void *opaque, Error **errp)
+{
+    QY7MachineState *s = (QY7MachineState *)obj;
+    double yaw_rate = s->yaw_rate;
+
+    (void)opaque;
+    visit_type_number(v, name, &yaw_rate, errp);
+}
+
+static void qy7_set_yaw_rate(Object *obj, Visitor *v, const char *name,
+                             void *opaque, Error **errp)
+{
+    QY7MachineState *s = (QY7MachineState *)obj;
+    double yaw_rate;
+
+    (void)opaque;
+    if (!visit_type_number(v, name, &yaw_rate, errp)) {
+        return;
+    }
+    if (!isfinite(yaw_rate)) {
+        error_setg(errp, "yaw-rate must be finite");
+        return;
+    }
+    s->yaw_rate = yaw_rate;
 }
 
 static char *qy7_gps_lat_get(Object *obj, Error **errp)
@@ -1277,9 +1189,9 @@ static void qy7_init(MachineState *machine)
     create_unimplemented_device("qy7.intc-usermask", 0xffd30000, 0x1000);
     create_unimplemented_device("qy7.intc2", 0xffd40000, 0x1000);
 
-    qmachine->drive_last_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    timer_mod(qmachine->drive_timer,
-              qmachine->drive_last_ns + QY7_DRIVE_TICK_NS);
+    qmachine->motion_last_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    timer_mod(qmachine->motion_timer,
+              qmachine->motion_last_ns + QY7_MOTION_TICK_NS);
 }
 
 static void qy7_machine_init(MachineClass *mc)
@@ -1315,19 +1227,15 @@ static void qy7_machine_class_init(ObjectClass *oc, const void *data)
         oc, "speed-kmh",
         "Synthetic vehicle speed for the SPDPLS model; changes apply live "
         "(default 0 km/h)");
-    object_class_property_add_bool_ptr(oc, "drive",
-                                       offsetof(QY7MachineState, drive),
-                                       OBJ_PROP_FLAG_READWRITE);
-    object_class_property_set_description(oc, "drive",
-        "Enable synthetic vehicle movement (default on)");
-    object_class_property_add(oc, "heading", "number", qy7_get_heading,
-                              qy7_set_heading, NULL, NULL);
-    object_class_property_set_description(oc, "heading",
-        "Target vehicle course in degrees clockwise from north (default 90)");
     object_class_property_add(oc, "odometer-m", "number",
                               qy7_get_odometer_m, NULL, NULL, NULL);
     object_class_property_set_description(oc, "odometer-m",
         "Read-only distance traveled by the synthetic vehicle in meters");
+    object_class_property_add(oc, "yaw-rate", "number",
+                              qy7_get_yaw_rate, qy7_set_yaw_rate,
+                              NULL, NULL);
+    object_class_property_set_description(oc, "yaw-rate",
+        "Synthetic yaw rate in degrees per second; positive turns right");
     object_class_property_add_uint32_ptr(oc, "gyro-raw",
                                          offsetof(QY7MachineState, gyro_raw),
                                          OBJ_PROP_FLAG_READWRITE);
