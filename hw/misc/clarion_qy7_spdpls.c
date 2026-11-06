@@ -116,7 +116,6 @@ void clarion_qy7_spdpls_set_speed(ClarionQy7Spdpls *s, uint32_t speed_kmh)
     uint64_t rate;
 
     s->speed_kmh = speed_kmh;
-    s->freq_500k = 0;
     s->phase_remainder = 0;
     timer_del(s->pulse_timer);
     timer_del(s->latch_timer);
@@ -212,7 +211,6 @@ ClarionQy7Spdpls *clarion_qy7_spdpls_init(MemoryRegion *sysmem,
     s->irq = irq;
     s->speed_kmh = speed_kmh;
     s->pulses_per_km = pulses_per_km;
-    s->freq_500k = 0;
     s->period_remainder = spdpls_rate(s) ?
         SPDPLS_NS_PER_HOUR % spdpls_rate(s) : 0;
     s->pulse_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, spdpls_pulse, s);
