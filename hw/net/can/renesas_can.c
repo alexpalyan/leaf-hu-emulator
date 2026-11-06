@@ -346,9 +346,9 @@ static void can_log(RenesasCANState *s, const char *fmt, ...)
  * Mailbox layout (16 bytes), from the guest's self-test mask (0xEF6294BC
  * above) and from what the driver writes itself: halfword +0x0 =
  * IDE(15) RTR(14) 0(13) SID(12..2) EID17..16(1..0), +0x2 = EID15..0,
- * +0x4 DLC, +0x6..+0xD data. Measured on ZE0 062: mailboxes 0..2 hold
- * 0x1a04/0x1d1c/0x1ab0, i.e. 0x681/0x747/0x6AC, and the driver compares IDs
- * as (h0 & 0x1ffc) == id << 2 (CAN.dll 0xEF6585FC).
+ * +0x4 DLC, +0x6..+0xD data. Measured on QY8202NA (G214ELNI.062):
+ * mailboxes 0..2 hold 0x1a04/0x1d1c/0x1ab0, i.e. 0x681/0x747/0x6AC, and the
+ * driver compares IDs as (h0 & 0x1ffc) == id << 2 (CAN.dll 0xEF6585FC).
  */
 static void can_frame_decode(const uint8_t *mb, uint32_t *id, bool *ext,
                              uint8_t *dlc, uint8_t data[8])

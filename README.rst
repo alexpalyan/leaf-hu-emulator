@@ -12,50 +12,10 @@ with `LeafSDTools <https://github.com/developerfromjokela/leafsdtools>`_,
 which runs from an SD card in the unit's update mode and writes the NOR
 flash to the card.
 
-.. list-table::
-   :header-rows: 1
-
-   * - QY model
-     - Unit
-     - Region
-   * - QY7201NE
-     - ZE0
-     - EUR
-   * - QY7214NL
-     - AZE0
-     - JPN
-   * - QY7221NL
-     - AZE0
-     - EUR
-   * - QY8202NA
-     - ZE0 (DKL car)
-     - EUR
-   * - QY8202NC
-     - ZE0 (BNB car)
-     - EUR
-   * - QY8252NF
-     - ZE0 (IEB car)
-     - EUR
-   * - QY8202PB
-     - e-NV200 (GNN van)
-     - EUR
-   * - QY8600NE
-     - ZE1
-     - USA
-   * - QY8602NB
-     - ZE1 (bench)
-     - EUR
-   * - QY8605NB
-     - ZE1
-     - JPN
-   * - QY8652NB
-     - ZE1
-     - EUR
-
-How far each unit boots, and which board and touch controller it has, is
-in `docs/clarion/units.md <docs/clarion/units.md>`_. The launcher picks the
-machine from the ``QY7`` or ``QY8`` prefix of the unit model, so other units
-of these series run too.
+Supported head unit models and their firmware builds are listed in
+`docs/clarion/units.md <docs/clarion/units.md>`_. The launcher picks the
+machine from the ``QY7`` or ``QY8`` prefix of the unit model, so other
+units of these series run too.
 
 Developed and tested on macOS (Apple Silicon); release packages are also
 built for Linux (x86_64). Windows is not built.
