@@ -16,6 +16,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(ClarionQy7GpsState, CLARION_QY7_GPS)
 
 void clarion_qy7_gps_set_sink(DeviceState *dev, ClarionQy7GpsSink fn,
                               void *opaque);
+void clarion_qy7_gps_set_position(DeviceState *dev, double lat, double lon);
+uint8_t clarion_qy7_gps_get_status(DeviceState *dev);
+void clarion_qy7_gps_set_status(DeviceState *dev, uint8_t status);
 void clarion_qy7_gps_rx_byte(DeviceState *dev, uint8_t byte);
 
 #endif

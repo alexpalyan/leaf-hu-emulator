@@ -13,6 +13,142 @@ Omit `--headless` to use the display window. The QY7 guest takes longer to
 reach its display than the QY8 guest. The machine connects its display
 microcontroller to SCIF3; panel input is represented as guest protocol frames.
 
+## GPS status and coordinates
+
+The QY7 receiver sends A0 frames on SCIF7. Its startup sequence sends one
+time-only frame with status `0x01`, then changes to `0x20`, which passes the
+Navi position-status gate. The firmware does not establish how long a real
+receiver takes to acquire a fix; the one-frame delay is a minimal model
+inference. The machine-level `gps-status` property reports the current byte and
+can be changed while the guest is running. The value is applied to the next
+A0 frame:
+
+```json
+{"execute":"qom-set","arguments":{"path":"/machine","property":"gps-status","value":1}}
+{"execute":"qom-set","arguments":{"path":"/machine","property":"gps-status","value":32}}
+```
+
+Status bits have separate consumers. The driver suppresses `SetSystemTime`
+when both bits `0x02` and `0x40` are set (`0x42`); Navi's OBJ-time writer
+checks bit `0x02`. Position handling accepts only `0x00`, `0x10`, `0x20`, and
+`0x30`. The firmware does not identify which of these values represents loss
+of fix. `gps-lat` and `gps-lon` are decimal-degree machine properties; the
+receiver encodes them in A0 using the firmware-confirmed 60,000-units-per-
+degree scale. For example:
+
+```sh
+build-release/qemu-clarion --read-only --headless \\
+    -M clarion-qy7,gps-lat=40.00,gps-lon=-75.00 \\
+    qy7-nor.bin map-card.img
+```
+
+## Gyro ADC inputs
+
+QY7 `navdrv` maps `HPB_GYRO_REGBASE` at `0xFFC5A000` and reads ADC channels
+from direct 32-bit registers. The A7 alias at `0x1FC5A000` maps the same
+register region. The current model returns:
+
+| Offset | Channel | Value | Evidence |
+|---|---:|---:|---|
+| `+0x030` | 0 | `gyro-raw` (default `0x5000`) | `SckRawCheck` range `(0x3CC9, 0x632D)` at `navdrv.dll:0x03CD5D4C–0x03CD5D5A` |
+| `+0x034` | 1 | `0x5000` | Shared `SckRawCheck` range with channel 2: `(0x1FFE, 0x7FF8)` |
+| `+0x038` | 2 | `0x5000` | Shared `SckRawCheck` range with channel 1: `(0x1FFE, 0x7FF8)` |
+| `+0x03C` | 3 | `0x4000` | `SckRawCheck` range `(0x1FFE, 0x5FFA)` |
+| `+0x040` | 4 | `0x4000` | Read by the gyro worker; no `SckRawCheck` range established |
+
+These are candidate passing values from the stationary QY7 control. The
+firmware checks open intervals and contains no repeated-sample counter in
+`SckRawCheck`. ADC0 is inferred to be the yaw gyro. ADC1 and ADC2 are inferred
+to be the two-axis G-sensor, consistent with the firmware string
+`GSNS 2 AXIS`; ADC3 is inferred to be a reference voltage or temperature
+input. These physical roles are not proven. Initialization writes are
+accepted and logged with `LOG_UNIMP`.
+
+## Reverse and illumination inputs
+
+`navdrv` maps the board STATUS1 register (`0x19800000`, uncached alias
+`0xB9800000`, `navdrv.dll:0x03CD6BEC`) and keeps its low three bits as the
+"IPR" signal word (`SensorThread`, `0x03CD6A56–0x03CD6A5E`; the word is split
+into ILL, bit 0 and bit 2 fields by `0x03CD5F58`).  The word is read once
+when the sensor thread starts and again on each IPR event; the model does not
+raise that event, so changes made after boot may not be sampled.  Set the
+properties on the command line.
+
+| STATUS1 bit | Property | Polarity | Evidence |
+|---|---|---|---|
+| 0 | `reverse` (default off) | active low | Boot A/B with only this bit changed: bit 0 clear makes the Navi dead-reckoning step run opposite to the arrow (about 180 degrees); bit 0 set makes it follow the arrow. The direction decision itself is in `Navi.exe`; `navdrv` only forwards the bit. |
+| 1 | `illumination` (default off) | active low | `InitIllSetting` (`0x03CD690C`) in auto mode derives ILL as `~(signal >> 1) & 1`; with the bit clear the map uses the night palette once movement starts. |
+| 2 | not modelled (reads 0) | unknown | Boot A/B (bit 2 set or clear): no visible effect on direction or palette. |
+
+STATUS1 therefore reads `0x0013` by default (bit 4 is the previous constant).
+Before this change bits 0 and 1 read as zero, which asserted both inputs.
+
+## Speed pulse input
+
+The QY7 SPDPLS model uses the vehicle's `speed-kmh` property (default `0`,
+which emits no speed pulses). QOM changes to `speed-kmh` reschedule pulse and
+latch timers immediately, so the speed can be changed while the guest runs.
+Each pulse increments SPDPLS `INTcount` at
+`+0x010` and raises the modeled INT2 bit 22 input. The guest's INT2 mask-set
+and mask-clear register writes acknowledge and unmask the source; the exact
+hardware re-unmask path is not established by the inspected firmware, so this
+uses the minimal register-level behavior as an assumption. The firmware's
+pulses-per-kilometre calibration was not found, so `vehicle-pulses-per-km`
+is a separate estimated vehicle parameter, defaulting to 2500. Both options
+belong to the machine's vehicle configuration, while SPDPLS remains a SoC
+device. Select the vehicle properties on the machine:
+
+| SPDPLS offset | Model behavior | Evidence status |
+|---|---|---|
+| `+0x00c` | Returns pulse count accumulated in a 100 ms window. | Current model behavior; the physical latch semantics remain unproven. The tested period-at-100-kHz hypothesis did not produce an on-map position marker in the 20 and 40 km/h route runs. |
+| `+0x010` | Cumulative pulse counter; each synthesized pulse increments it. | Proven by the firmware accessor and builder use. |
+| `+0x01c` | Returns zero in the current model. | `navdrv` has a `Get500Kfreq` accessor, but its 36-byte NAV1 builder does not read this register. The firmware-side role remains unknown. |
+| `+0x104` | Returns zero. | Firmware reads it; no source or initialization value was identified. |
+| `+0x110` | Returns zero. | Firmware reads it; no source or initialization value was identified. |
+
+```sh
+build-release/qemu-clarion --read-only --headless \
+    -M clarion-qy7,speed-kmh=60,vehicle-pulses-per-km=2500 \
+    qy7-nor.bin map-card.img
+```
+
+The estimate is not a QY7 firmware or hardware specification. `speed-kmh` is
+one machine-level vehicle property, so it can be shared by hardware and GPS
+models. The current GPS receiver emits time-only frames and does not read or
+transmit speed; this change does not add speed fields to its protocol. With
+the default zero speed, SPDPLS does not schedule pulse or latch timers.
+
+## Driving the vehicle
+
+The machine accepts physical speed and yaw rate. `speed-kmh` drives the
+SPDPLS pulse model and advances the read-only `odometer-m` distance. The
+estimated calibration is 2500 pulses/km (0.4 m per pulse). On a 10 Hz
+`QEMU_CLOCK_VIRTUAL` timer, nonzero `yaw-rate` updates gyro ADC0 using
+`Δ = yaw-rate × 0.4 / (4.83e-4 × speed_mps)`, clamped to `|Δ| <= 12000`,
+with `gyro-raw = 0x5000 + Δ`. Positive yaw turns right. At zero speed, a
+nonzero yaw rate sets gyro ADC0 to `0x5000`. With `yaw-rate=0`, manual writes
+to `gyro-raw` remain in effect.
+
+GPS coordinates are external inputs and do not move with `speed-kmh` or
+`yaw-rate`. Set the receiver's starting position with `gps-lat` and `gps-lon`
+when launching QEMU; adjust the navigation position or course in the guest
+menu when needed. `odometer-m` is cumulative distance in meters since QEMU
+started.
+
+Set a starting position, then drive straight at 40 km/h and read the distance:
+
+```json
+{"execute":"qom-set","arguments":{"path":"/machine","property":"gps-lat","value":"59.91"}}
+{"execute":"qom-set","arguments":{"path":"/machine","property":"gps-lon","value":"10.75"}}
+{"execute":"qom-set","arguments":{"path":"/machine","property":"speed-kmh","value":40}}
+{"execute":"qom-get","arguments":{"path":"/machine","property":"odometer-m"}}
+```
+
+`tools/gps_track.py` can drive a JSON route using `speed-kmh`, `yaw-rate`, and
+`odometer-m`. GPS coordinates in the route are used only to calculate segment
+lengths and turn angles; the tool does not write GPS position or synthesize
+gyro ADC values.
+
 ## Front-panel keys
 
 QEMU key-down and key-up events become command `0x34` frames. The high bit in
@@ -135,6 +271,15 @@ The `PostMessageW` branch targets the HWND stored in KEPDRV's context and
 posts `WM_KEYDOWN`/`WM_KEYUP` with the translated VK. The window's application
 identity was not recovered from the available runtime state.
 
+## 2DG window clipping
+
+The 2DG model intersects a command's destination with the persistent window
+clip registers (`CLIP_MIN`/`CLIP_MAX`) only when that command header carries
+`M2DG_F_WCLIP` (`0x1000`). The system clip remains active for every command;
+the one-shot `CLIPRECT` and `CLIPPATH` handling is independent of this flag.
+This behavior is inferred from QY7 command-list diagnostics and is an emulator
+model, not a hardware specification.
+
 ## Verified MCAN routes
 
 These rows record guest-visible mappings from read-only QY7 captures. They do
@@ -193,6 +338,48 @@ exports have fixed virtual addresses, so no runtime module-load adjustment is
 needed. For manual use, `-plugin PATH,image=NOR[,image=SD],out=FILE` performs
 the same scan; `syms=FILE` remains available as a fallback for explicit
 address lists.
+
+## Debugging with a host debugger
+
+Pausing the QEMU process with a host debugger while the guest is idle can let
+the virtual clock catch up when execution resumes if `-icount` uses its
+default `sleep=on`. On QY7 this can expire the modeled watchdog and make the
+launcher print `power cycle; restarting QEMU`. This is a watchdog reset, not
+the guest OFFP power-off path.
+
+The QY7 watchdog is mapped at `0xFFCC0000` and uses `QEMU_CLOCK_VIRTUAL`.
+Its default `wdt-pclk` is a provisional 24 MHz value, based on the documented
+EXTAL frequency because the QY7 watchdog Pck has not been measured. With the
+guest's observed watchdog settings this gives an estimated 4.38-second
+timeout; the guest feeds it at about 3-second intervals.
+
+In T290, five-second host-debugger stops with `wdt=on` caused a watchdog
+power-cycle in 3/3 runs with the wrapper's `-icount shift=2` (the default
+`sleep=on`). With `-icount shift=2,sleep=off`, 0/3 runs power-cycled. A
+shorter one-second stop passed in one recorded control, so a short
+stop is not a guarantee: the watchdog's phase matters. The `qy7_wdt_timeout`
+trace event appeared before each observed restart in the five-second default
+`icount` controls.
+
+For host-debugger sessions, use:
+
+```sh
+build-release/qemu-clarion -machine clarion-qy7 -icount shift=2,sleep=off NOR SD
+```
+
+The equivalent machine property `-machine clarion-qy7,wdt=off` freezes the
+watchdog, but changes guest runtime conditions; identify it in test reports.
+The machine help lists `wdt` as a boolean, defaulting to on, and `wdt-pclk` as
+a frequency in Hz. To check for a watchdog expiry, enable its trace event:
+
+```sh
+-trace enable=qy7_wdt_timeout,file=wdt.trace
+```
+
+With `sleep=off`, virtual time jumps to the next timer deadline as soon as
+the guest CPU idles, without waiting for the corresponding wall-clock
+interval. Guest timeouts may therefore elapse faster than real time during
+idle periods; account for this when interpreting debugger runs.
 
 ## QY7 power-off and process restart
 

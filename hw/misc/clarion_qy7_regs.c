@@ -22,6 +22,8 @@ typedef struct QY7BoardRegs {
     MemoryRegion iomem;
     uint8_t dipsw;
     uint16_t status0_inputs;
+    const bool *reverse;
+    const bool *illumination;
     bool extint_model;
     qemu_irq extirq;
     uint16_t ext_status[3];
@@ -126,7 +128,9 @@ static uint64_t qy7_regs_read(void *opaque, hwaddr addr, unsigned size)
     if (addr == QY7_STATUS0 - QY7_REGS_BASE) {
         value = 0x0001 | s->status0_inputs;
     } else if (addr == QY7_STATUS1 - QY7_REGS_BASE) {
-        value = 0x0010;
+        /* Bits 0 and 1 are active low; see the QY7 documentation. */
+        value = 0x0010 | (*s->reverse ? 0 : 0x0001) |
+                (*s->illumination ? 0 : 0x0002);
     } else if (addr == QY7_DIPSW - QY7_REGS_BASE) {
         value = s->dipsw << 12;
     }
@@ -210,13 +214,16 @@ static const MemoryRegionOps qy7_regs_ops = {
 };
 
 void clarion_qy7_regs_init(MemoryRegion *sysmem, uint8_t dipsw,
-                           uint16_t status0_inputs, bool extint_model,
+                           uint16_t status0_inputs, const bool *reverse,
+                           const bool *illumination, bool extint_model,
                            qemu_irq extirq)
 {
     QY7BoardRegs *s = g_new0(QY7BoardRegs, 1);
 
     s->dipsw = dipsw;
     s->status0_inputs = status0_inputs;
+    s->reverse = reverse;
+    s->illumination = illumination;
     s->extint_model = extint_model;
     s->extirq = extirq;
     for (size_t i = 0; i < G_N_ELEMENTS(s->ext_mask); i++) {
