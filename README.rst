@@ -1,6 +1,6 @@
-============================
-Clarion head units in QEMU
-============================
+==================
+Leaf HU Emulator
+==================
 
 This is a fork of `QEMU <https://www.qemu.org/>`_ that emulates the boards
 of Clarion head units fitted to the Nissan Leaf, well enough to boot their
@@ -15,65 +15,50 @@ flash to the card.
 .. list-table::
    :header-rows: 1
 
-   * - Unit
-     - CPU
-     - Machine
-     - Emulator
-     - State
-   * - QY8652NB
-     - ARM (Renesas R-Car)
-     - ``clarion-qy8``
-     - ``qemu-system-arm``
-     - boots to the user interface: consent screen, menu, touch input,
-       map screen with the map card
-   * - QY8202NA
-     - ARM (Renesas R-Car)
-     - ``clarion-qy8``
-     - ``qemu-system-arm``
-     - boots to the consent screen
-   * - QY8602NB, QY8600NE
-     - ARM (Renesas R-Car)
-     - ``clarion-qy8``
-     - ``qemu-system-arm``
-     - 2018+ Leaf (ZE1), European and US units, same board as QY8652NB
-       (TMA460 touch); boot to the consent screen
-   * - QY8202PB
-     - ARM (Renesas R-Car)
-     - ``clarion-qy8``
-     - ``qemu-system-arm``
-     - e-NV200 (ME0), same board as QY8202NA (TMA616 touch); boots to the
-       consent screen
-   * - QY8202NC, QY8252NF
-     - ARM (Renesas R-Car)
-     - ``clarion-qy8``
-     - ``qemu-system-arm``
-     - same board as QY8202NA (TMA616 touch); boot to the consent screen,
-       touch accepted
+   * - QY model
+     - Unit
+     - Region
+   * - QY7214NL
+     - QY7
+     - JPN
    * - QY7221NL
-     - SH-4A
-     - ``clarion-qy7``
-     - ``qemu-system-sh4``
-     - boots to the user interface with the paired map card: consent
-       screen, touch input, map screen; MENU, MAP/VOICE, STATUS and ZERO
-       EMISSION keys arrive over the vehicle CAN bus
+     - QY7
+     - EUR
+   * - QY8202NA
+     - ZE0 (DKL car)
+     - EUR
+   * - QY8202NC
+     - ZE0 (BNB car)
+     - EUR
+   * - QY8252NF
+     - ZE0 (IEB car)
+     - EUR
+   * - QY8202PB
+     - e-NV200 (GNN van)
+     - EUR
+   * - QY8600NE
+     - ZE1
+     - USA
+   * - QY8602NB
+     - ZE1 (bench)
+     - EUR
+   * - QY8605NB
+     - ZE1
+     - JPN
+   * - QY8652NB
+     - ZE1
+     - EUR
 
-The launcher picks the machine from the ``QY7`` or ``QY8`` prefix of the
-unit model, so other units of these series run too. The QY8 machine picks
-the board from the firmware build named in the NK2 image header, not from
-the model: ``G214…`` builds are for the older board (TMA616 touch),
-``G218…`` builds for the ZE1 board (TMA460 touch).
+How far each unit boots, and which board and touch controller it has, is
+in `docs/clarion/units.md <docs/clarion/units.md>`_. The launcher picks the
+machine from the ``QY7`` or ``QY8`` prefix of the unit model, so other units
+of these series run too.
 
-Developed and tested on macOS (Apple Silicon). A Linux build should work
-the same way but is not covered here.
+Developed and tested on macOS (Apple Silicon); release packages are also
+built for Linux (x86_64). Windows is not built.
 
 Building
 ========
-
-On macOS, run ``scripts/build-macos-app.sh build-release/qemu-clarion`` to
-create ``Leaf HU Emulator.app``.
-
-App icon: ``scripts/macos-app/AppIcon.icns`` is copied to
-``Contents/Resources/AppIcon.icns``.
 
 Dependencies on macOS: Xcode Command Line Tools, Python 3, and
 ``brew install ninja pkg-config glib pixman``.
@@ -91,6 +76,10 @@ Use this optimized build to run units. A debug build
 only for QEMU assertions and symbols: the guest is noticeably slower in it
 and the QY8 user interface misses its first screen.
 
+On macOS, ``scripts/build-macos-app.sh build-release/qemu-clarion`` wraps
+the build in ``Leaf HU Emulator.app``, so the menu bar and Dock show that
+name and the app icon (``scripts/macos-app/AppIcon.icns``).
+
 Releases / binary packages
 ==========================
 
@@ -107,7 +96,10 @@ else has to be installed.
   xattr -dr com.apple.quarantine .      # macOS only: the binaries are not notarized
   ./qemu-clarion NOR [SD]
 
-The binaries are ad-hoc signed on macOS. The archives are built by
+For Linux desktops the archives also carry
+``share/applications/leaf-hu-emulator.desktop`` and its icons under
+``share/icons``. The binaries are ad-hoc signed on
+macOS. The archives are built by
 ``.github/workflows/release.yml`` using ``scripts/clarion/package.sh``.
 
 Running a unit
@@ -160,6 +152,9 @@ an image it cannot write to.
 
 What the launcher sets up unless you override it:
 
+* a window title with the unit model and boot mode, for example
+  ``Leaf HU Emulator MODEL: QY7221NL - DSW: 7`` (``-name``; your own
+  ``-name`` is kept);
 * a display window and the guest console on the terminal
   (``-serial mon:stdio``; ``Ctrl-A C`` switches to the QEMU monitor,
   ``Ctrl-A X`` quits). Passing your own ``-serial``, ``-display`` or

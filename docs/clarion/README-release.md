@@ -1,4 +1,4 @@
-# Clarion head-unit emulator (binary package)
+# Leaf HU Emulator (binary package)
 
 Layout:
 
@@ -8,6 +8,7 @@ Layout:
 - `libexec/qemu-system-sh4`: engine for QY7 units.
 - `libexec/qemu-img`: creates session overlays for `--read-only` runs.
 - `lib/`: debug-print plugin and bundled shared libraries.
+- `share/`: Linux desktop entry and icons (`leaf-hu-emulator`).
 - `qmp.py`: drives a running unit over QMP (tap, screenshot, monitor
   commands); needs Python 3.
 
