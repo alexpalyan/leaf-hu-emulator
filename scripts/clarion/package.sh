@@ -41,8 +41,16 @@ stage=$(mktemp -d "${TMPDIR:-/tmp}/qemu-clarion.XXXXXX")
 trap 'rm -rf "$stage"' EXIT
 root=$stage/$name
 
-mkdir -p "$root/libexec" "$root/lib"
+mkdir -p "$root/libexec" "$root/lib" \
+    "$root/share/applications" \
+    "$root/share/icons/hicolor/32x32/apps" \
+    "$root/share/icons/hicolor/128x128/apps"
 cp "$build/qemu-clarion" "$src/scripts/clarion/qmp.py" "$root/"
+cp "$src/ui/qemu.desktop" "$root/share/applications/leaf-hu-emulator.desktop"
+cp "$src/ui/icons/leaf-hu-emulator_32x32.bmp" \
+    "$root/share/icons/hicolor/32x32/apps/leaf-hu-emulator.bmp"
+cp "$src/ui/icons/leaf-hu-emulator_128x128.png" \
+    "$root/share/icons/hicolor/128x128/apps/leaf-hu-emulator.png"
 cp "$build/qemu-system-arm" "$build/qemu-system-sh4" "$build/qemu-img" \
     "$root/libexec/"
 case $os in

@@ -69,6 +69,12 @@ the same way but is not covered here.
 Building
 ========
 
+On macOS, run ``scripts/build-macos-app.sh build-release/qemu-clarion`` to
+create ``Leaf HU Emulator.app``.
+
+App icon: ``scripts/macos-app/AppIcon.icns`` is copied to
+``Contents/Resources/AppIcon.icns``.
+
 Dependencies on macOS: Xcode Command Line Tools, Python 3, and
 ``brew install ninja pkg-config glib pixman``.
 

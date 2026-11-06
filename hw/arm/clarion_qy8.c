@@ -283,7 +283,7 @@ static int qy8_scif_chr_index(int scif)
 #define BCTL_CD1            0x0040      /* bit 6: slot 1, 0 = card present */
 
 /* DIPSW modes from the eboot transition table @VA 0x97c07e28 */
-#define QY8_DIPSW_NORM_RES  5           /* "NORM(RES)>>", as in TEST_B1 */
+#define QY8_DIPSW_NORM_RES  CLARION_QY8_DEFAULT_DIPSW /* "NORM(RES)>>" */
 
 /* --- HSCIF0 (high-speed SCIF) @0xFFE48000 ------------------------------ */
 

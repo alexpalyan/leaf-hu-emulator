@@ -11,6 +11,10 @@
 #define CLARION_PROD_CARD_PWD_OFF 0x100
 #define CLARION_PROD_CARD_PWD_LEN 16
 
+/* Keep launcher labels in sync with the machine defaults. */
+#define CLARION_QY7_DEFAULT_DIPSW 7
+#define CLARION_QY8_DEFAULT_DIPSW 5
+
 /* Exit status for a guest power cycle; the launcher restarts QEMU on it. */
 #define CLARION_POWER_CYCLE_EXIT_CODE 0xc7
 
@@ -30,11 +34,14 @@ typedef struct ClarionSeries {
     const char *icount;
     /* NOR offset of the kernel build string (QY7: NK1, QY8: NK2). */
     unsigned long long build_off;
+    int default_dipsw;
 } ClarionSeries;
 
 static const ClarionSeries clarion_series[] = {
-    { "QY7", "sh4", "clarion-qy7", 1, "shift=2", 0x40020 },
-    { "QY8", "arm", "clarion-qy8", 1, NULL, 0xac0016 },
+    { "QY7", "sh4", "clarion-qy7", 1, "shift=2", 0x40020,
+      CLARION_QY7_DEFAULT_DIPSW },
+    { "QY8", "arm", "clarion-qy8", 1, NULL, 0xac0016,
+      CLARION_QY8_DEFAULT_DIPSW },
 };
 
 static inline const ClarionSeries *clarion_series_find(const char *model)

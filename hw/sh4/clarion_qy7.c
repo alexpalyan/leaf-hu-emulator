@@ -189,7 +189,7 @@ static void qy7_machine_instance_init(Object *obj)
 {
     QY7MachineState *s = (QY7MachineState *)obj;
 
-    s->dipsw = 7;
+    s->dipsw = CLARION_QY7_DEFAULT_DIPSW;
     s->wdt_pclk_hz = QY7_WDT_PCLK;
     s->wdt_enabled = true;
     /* Assumed asserted PowerMonitor input levels (STATUS0 bits 7 and 9). */
