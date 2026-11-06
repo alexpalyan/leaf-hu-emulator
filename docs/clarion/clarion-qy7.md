@@ -117,6 +117,38 @@ models. The current GPS receiver emits time-only frames and does not read or
 transmit speed; this change does not add speed fields to its protocol. With
 the default zero speed, SPDPLS does not schedule pulse or latch timers.
 
+## Driving the vehicle
+
+The machine-level vehicle model integrates GPS position, heading, and
+distance on a 10 Hz `QEMU_CLOCK_VIRTUAL` timer. `drive` defaults to `on`;
+setting it to `off` leaves the synthesized GPS position and gyro unchanged.
+`speed-kmh` controls SPDPLS and vehicle movement. `heading` is the target
+course in degrees clockwise from north (`0` north, `90` east). While moving,
+the model turns toward that target at 20 degrees per second and updates gyro
+ADC0. The estimated calibration is 2500 pulses/km, or 0.4 m per pulse.
+
+`gps-lat` and `gps-lon` set the current vehicle position. A later change to
+either property relocates the vehicle immediately. `odometer-m` is a
+read-only, cumulative distance in meters since QEMU started; it advances only
+while `drive` is on and `speed-kmh` is above zero.
+
+Use QMP to position the vehicle, select its course and speed, then read its
+distance:
+
+```json
+{"execute":"qom-set","arguments":{"path":"/machine","property":"gps-lat","value":"59.91"}}
+{"execute":"qom-set","arguments":{"path":"/machine","property":"gps-lon","value":"10.75"}}
+{"execute":"qom-set","arguments":{"path":"/machine","property":"heading","value":90}}
+{"execute":"qom-set","arguments":{"path":"/machine","property":"speed-kmh","value":40}}
+{"execute":"qom-get","arguments":{"path":"/machine","property":"odometer-m"}}
+```
+
+`tools/gps_track.py` can drive a JSON route using these properties. It sets the
+initial coordinate and course, updates speed and target course at each segment,
+and uses `odometer-m` for distance marks and screenshots. QEMU computes the
+intermediate GPS positions and gyro values itself; the tool does not poll the
+SPDPLS register or synthesize gyro samples.
+
 ## Front-panel keys
 
 QEMU key-down and key-up events become command `0x34` frames. The high bit in
