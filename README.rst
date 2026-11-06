@@ -18,11 +18,14 @@ flash to the card.
    * - QY model
      - Unit
      - Region
+   * - QY7201NE
+     - ZE0
+     - EUR
    * - QY7214NL
-     - QY7
+     - AZE0
      - JPN
    * - QY7221NL
-     - QY7
+     - AZE0
      - EUR
    * - QY8202NA
      - ZE0 (DKL car)

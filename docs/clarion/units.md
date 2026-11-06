@@ -7,6 +7,7 @@ NOR` prints the model and firmware build to report.
 
 | QY model | CPU | Machine | Emulator | State |
 | --- | --- | --- | --- | --- |
+| QY7201NE | SH-4A | `clarion-qy7` | `qemu-system-sh4` | boots to the user interface with its map card: consent screen, map screen |
 | QY7214NL | SH-4A | `clarion-qy7` | `qemu-system-sh4` | firmware analysed; boot not documented yet |
 | QY7221NL | SH-4A | `clarion-qy7` | `qemu-system-sh4` | boots to the user interface with the paired map card: consent screen, touch input, map screen; MENU, MAP/VOICE, STATUS and ZERO EMISSION keys arrive over the vehicle CAN bus |
 | QY8202NA | ARM (Renesas R-Car) | `clarion-qy8` | `qemu-system-arm` | boots to the consent screen |
