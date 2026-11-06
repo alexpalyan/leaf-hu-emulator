@@ -100,7 +100,7 @@ device. Select the vehicle properties on the machine:
 
 | SPDPLS offset | Model behavior | Evidence status |
 |---|---|---|
-| `+0x00c` | Returns pulse count accumulated in a 100 ms window. | Inference from the firmware accessor name `Get100LatchData`; exact latch semantics remain unknown. |
+| `+0x00c` | Returns pulse count accumulated in a 100 ms window. | Current model behavior; the physical latch semantics remain unproven. The tested period-at-100-kHz hypothesis did not produce an on-map position marker in the 20 and 40 km/h route runs. |
 | `+0x010` | Cumulative pulse counter; each synthesized pulse increments it. | Proven by the firmware accessor and builder use. |
 | `+0x01c` | Returns zero in the current model. | `navdrv` has a `Get500Kfreq` accessor, but its 36-byte NAV1 builder does not read this register. The firmware-side role remains unknown. |
 | `+0x104` | Returns zero. | Firmware reads it; no source or initialization value was identified. |
