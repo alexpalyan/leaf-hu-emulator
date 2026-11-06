@@ -42,4 +42,4 @@ ad-hoc signed):
 
     xattr -dr com.apple.quarantine .
 
-Source and documentation: https://github.com/alexpalyan/qemu-clarion
+Source and documentation: https://github.com/alexpalyan/leaf-hu-emulator
