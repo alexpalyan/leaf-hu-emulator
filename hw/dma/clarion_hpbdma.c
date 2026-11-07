@@ -862,7 +862,14 @@ static void hpb_chan_write(void *opaque, hwaddr addr, uint64_t val,
             ClarionHpbChan *c = &s->ch[ch];
 
             c->next_requested = true;
-            if (c->active && (!c->left || c->eod_pending)) {
+            /*
+             * QY7 SCIF7 requests the next plane after a partial EOD. SCIF3
+             * keeps DNXT pending until the programmed set drains, so scope
+             * this early switch to the GPS channel on QY7 only.
+             */
+            if (c->active &&
+                (!c->left ||
+                 (s->qy7_mode && ch == 7 && c->eod_pending))) {
                 c->next_requested = false;
                 hpb_chan_load_plane(s, ch,
                                     (c->dcr & DCR_DIP) ? c->plane ^ 1 : 0);

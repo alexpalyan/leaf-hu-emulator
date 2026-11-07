@@ -415,11 +415,22 @@ errors remain visible without these flags.
 
 ## HPB-DMAC partial RX sets with CT and DIP
 
-On QY7 SCIF receive, the peripheral end-of-data callback ends a partial DMA
-set and raises its completion interrupt while `DTCSR` still reports the
-unused part of the programmed block. The guest handler reads `DSTSR` and
-`DTCSR`, drains the active plane, then writes `DNXT` for the other plane. If
-that request arrives after the partial-set interrupt, the model must load the
-other plane immediately; waiting for the old block's remaining byte count
-puts the next short packet at the tail of the already-consumed plane. The
-model retains the residual count until the guest requests the next plane.
+QY7 SCIF RX may end a DMA set before its programmed transfer count is
+exhausted. The guest reads `DSTSR` and `DTCSR`, consumes the active plane, and
+writes `DNXT` for the next plane. The channel's behavior after that request
+is guest-path-specific.
+
+On SCIF7 (channel 7), the GPS driver requests the next plane after a partial
+EOD and expects the model to load it immediately. Waiting for the old count
+puts later short packets at the tail of the consumed plane; retaining the
+partial-EOD state until `DNXT` preserves the residue and permits the plane
+switch.
+
+Clarification 10 compared that behavior with SCIF3 (channel 3), which carries
+touch-panel frames. `serial_scif.dll` reads `DSTSR` at `0x03C8B11E` and
+`DTCSR` at `0x03C8B124`, then writes `DNXT` through `0x03C8BB9C`. After a
+partial EOD, the old count-only rule leaves the residual count and pending
+`DNXT` visible; the 52b early-switch rule immediately changed planes and
+reset `DTCSR`. In matching read-only runs, the latter stayed on consent while
+the count-only rule reached the map. The early switch is therefore limited
+to QY7 channel 7. Other QY7 channels and QY8 retain the count-only behavior.
