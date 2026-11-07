@@ -127,6 +127,7 @@ typedef struct ClarionHpbChan {
     uint32_t left;                      /* remaining transfer units */
     unsigned plane;                     /* current plane */
     bool next_requested;                /* DNXT: next plane requested */
+    bool eod_pending;                    /* partial set ended; await DNXT */
     bool active;
 } ClarionHpbChan;
 
@@ -414,6 +415,7 @@ static void hpb_chan_load_plane(ClarionHpbDmaState *s, int ch, unsigned plane)
     c->ddasr = c->dar[plane];
     c->left = c->tcr[plane];
     c->dtcsr = c->left;
+    c->eod_pending = false;
 }
 
 /*
@@ -687,6 +689,7 @@ bool clarion_hpbdma_feed(DeviceState *dev, hwaddr periph_addr, uint8_t val)
         c->ddasr++;
         c->left--;
         c->dtcsr = c->left;
+        c->eod_pending = false;
 
         if (!c->left) {
             if (hpb_dbg()) {
@@ -734,6 +737,7 @@ void clarion_hpbdma_eod(DeviceState *dev, hwaddr periph_addr)
             continue;
         }
         c->dtcsr = c->left;
+        c->eod_pending = true;
         hpb_chan_finish(s, ch);
         return;                         /* one channel per address */
     }
@@ -858,7 +862,7 @@ static void hpb_chan_write(void *opaque, hwaddr addr, uint64_t val,
             ClarionHpbChan *c = &s->ch[ch];
 
             c->next_requested = true;
-            if (c->active && !c->left) {
+            if (c->active && (!c->left || c->eod_pending)) {
                 c->next_requested = false;
                 hpb_chan_load_plane(s, ch,
                                     (c->dcr & DCR_DIP) ? c->plane ^ 1 : 0);

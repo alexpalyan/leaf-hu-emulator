@@ -412,3 +412,14 @@ build-release/qemu-clarion --read-only --headless NOR SD \
 Other guest-driven model diagnostics using `LOG_GUEST_ERROR` are available
 with `-d guest_errors`; this category can be verbose. Launcher messages, unit identification, and real
 errors remain visible without these flags.
+
+## HPB-DMAC partial RX sets with CT and DIP
+
+On QY7 SCIF receive, the peripheral end-of-data callback ends a partial DMA
+set and raises its completion interrupt while `DTCSR` still reports the
+unused part of the programmed block. The guest handler reads `DSTSR` and
+`DTCSR`, drains the active plane, then writes `DNXT` for the other plane. If
+that request arrives after the partial-set interrupt, the model must load the
+other plane immediately; waiting for the old block's remaining byte count
+puts the next short packet at the tail of the already-consumed plane. The
+model retains the residual count until the guest requests the next plane.
