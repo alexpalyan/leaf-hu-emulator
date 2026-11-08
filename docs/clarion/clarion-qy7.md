@@ -415,22 +415,15 @@ errors remain visible without these flags.
 
 ## HPB-DMAC partial RX sets with CT and DIP
 
-QY7 SCIF RX may end a DMA set before its programmed transfer count is
-exhausted. The guest reads `DSTSR` and `DTCSR`, consumes the active plane, and
-writes `DNXT` for the next plane. The channel's behavior after that request
-is guest-path-specific.
+QY7 SCIF RX uses two HPB-DMAC planes as one circular buffer. The guest's
+`serial_scif.dll` consumer reads the ring through a pointer at
+`0x03C8B0A8`, wrapping it with the `2 * size - 1` mask. Each plane is one
+half of that ring; a short receive can end before the programmed transfer
+count is exhausted.
 
-On SCIF7 (channel 7), the GPS driver requests the next plane after a partial
-EOD and expects the model to load it immediately. Waiting for the old count
-puts later short packets at the tail of the consumed plane; retaining the
-partial-EOD state until `DNXT` preserves the residue and permits the plane
-switch.
-
-Clarification 10 compared that behavior with SCIF3 (channel 3), which carries
-touch-panel frames. `serial_scif.dll` reads `DSTSR` at `0x03C8B11E` and
-`DTCSR` at `0x03C8B124`, then writes `DNXT` through `0x03C8BB9C`. After a
-partial EOD, the old count-only rule leaves the residual count and pending
-`DNXT` visible; the 52b early-switch rule immediately changed planes and
-reset `DTCSR`. In matching read-only runs, the latter stayed on consent while
-the count-only rule reached the map. The early switch is therefore limited
-to QY7 channel 7. Other QY7 channels and QY8 retain the count-only behavior.
+At receiver idle, partial EOD signals that the received portion is available
+and preserves the remaining transfer count in `DTCSR`. The guest consumes
+that portion and writes `DNXT` to arm the other plane. `DNXT` does not discard
+the unconsumed count or switch planes early: the active plane changes only
+when `left == 0`. This gives SCIF3 touch-panel data and SCIF7 GPS data the same
+two-plane ring behavior, without a channel-specific early-switch rule.

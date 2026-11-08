@@ -286,8 +286,12 @@ static void micom_frame(ClarionMicomState *s)
             action = "ack-only+cenet-audio-off";
             micom_queue(s, cenet_audio_off, sizeof(cenet_audio_off));
         }
+        /*
+         * SYNTHETIC: send on first 08/0B. The link no longer needs a second
+         * handshake, while real micom release timing remains unknown.
+         */
         if (s->cenet_antitheft_release &&
-            !s->cenet_antitheft_release_sent && s->handshake_count > 1) {
+            !s->cenet_antitheft_release_sent && s->handshake_count >= 1) {
             action = "ack-only+cenet-antitheft-release";
             micom_queue(s, cenet_antitheft_lock,
                         sizeof(cenet_antitheft_lock));

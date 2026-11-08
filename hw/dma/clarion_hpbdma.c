@@ -127,7 +127,6 @@ typedef struct ClarionHpbChan {
     uint32_t left;                      /* remaining transfer units */
     unsigned plane;                     /* current plane */
     bool next_requested;                /* DNXT: next plane requested */
-    bool eod_pending;                    /* partial set ended; await DNXT */
     bool active;
 } ClarionHpbChan;
 
@@ -415,7 +414,6 @@ static void hpb_chan_load_plane(ClarionHpbDmaState *s, int ch, unsigned plane)
     c->ddasr = c->dar[plane];
     c->left = c->tcr[plane];
     c->dtcsr = c->left;
-    c->eod_pending = false;
 }
 
 /*
@@ -689,7 +687,6 @@ bool clarion_hpbdma_feed(DeviceState *dev, hwaddr periph_addr, uint8_t val)
         c->ddasr++;
         c->left--;
         c->dtcsr = c->left;
-        c->eod_pending = false;
 
         if (!c->left) {
             if (hpb_dbg()) {
@@ -704,16 +701,18 @@ bool clarion_hpbdma_feed(DeviceState *dev, hwaddr periph_addr, uint8_t val)
 }
 
 /*
- * The module receiver became idle. End the active set for any channel that
- * transferred data in this burst. DTCSR retains the remaining count, so the
- * driver sees exactly the number of bytes that arrived.
+ * The module receiver became idle. Signal completion for the current burst
+ * without consuming the rest of the programmed set. DTCSR retains the
+ * remaining count, so the guest can consume this portion of its two-plane
+ * ring and request the next plane with DNXT. Switch planes only when the
+ * current set reaches zero.
  *
  * Why the model needs this: SCIF delivers received data through HPB-DMAC,
  * not interrupts. The guest keeps RIE = 0 on all SCIFs (seen at boot:
  * SCSCR 0x003E/0x00BE), so RXI is not used. The driver learns of data only
  * from the DMA channel interrupt. Its buffer is 128 bytes while link frames
  * are short (the panel response is 20 bytes), so without early completion the
- * set would never finish and the frame would go unnoticed. Hardware uses the
+ * set would never signal and the frame would go unnoticed. Hardware uses the
  * SCIF receiver-empty (DR) signal for this purpose.
  */
 void clarion_hpbdma_eod(DeviceState *dev, hwaddr periph_addr)
@@ -737,8 +736,7 @@ void clarion_hpbdma_eod(DeviceState *dev, hwaddr periph_addr)
             continue;
         }
         c->dtcsr = c->left;
-        c->eod_pending = true;
-        hpb_chan_finish(s, ch);
+        hpb_chan_complete(s, ch);
         return;                         /* one channel per address */
     }
 }
@@ -862,14 +860,8 @@ static void hpb_chan_write(void *opaque, hwaddr addr, uint64_t val,
             ClarionHpbChan *c = &s->ch[ch];
 
             c->next_requested = true;
-            /*
-             * QY7 SCIF7 requests the next plane after a partial EOD. SCIF3
-             * keeps DNXT pending until the programmed set drains, so scope
-             * this early switch to the GPS channel on QY7 only.
-             */
-            if (c->active &&
-                (!c->left ||
-                 (s->qy7_mode && ch == 7 && c->eod_pending))) {
+            /* DNXT arms the next plane; switch only when the set is empty. */
+            if (c->active && !c->left) {
                 c->next_requested = false;
                 hpb_chan_load_plane(s, ch,
                                     (c->dcr & DCR_DIP) ? c->plane ^ 1 : 0);
