@@ -82,7 +82,7 @@
 #define QY7_SCIF7_BASE 0xffe47000
 #define QY7_MOTION_TICK_NS G_GUINT64_CONSTANT(100000000)
 #define QY7_GYRO_ZERO 0x5000
-#define QY7_GYRO_SCALE (0.000483)
+#define QY7_GYRO_SCALE (0.00483)
 #define QY7_GYRO_MAX_DELTA 12000.0
 #define QY7_SCIF_SCSCR_RE 0x0010
 #define QY7_GYRO_BASE 0xffc5a000
@@ -178,18 +178,14 @@ static void qy7_motion_tick(void *opaque)
     if (s->speed_kmh && elapsed_s > 0.0) {
         s->odometer_m += s->speed_kmh * (elapsed_s / 3.6);
     }
-    if (s->yaw_rate != 0.0) {
-        if (s->speed_kmh) {
-            double speed_mps = s->speed_kmh / 3.6;
-            double delta = s->yaw_rate * 0.4 /
-                           (QY7_GYRO_SCALE * speed_mps);
+    if (s->yaw_rate != 0.0 && s->speed_kmh > 0) {
+        double delta = s->yaw_rate / QY7_GYRO_SCALE;
 
-            delta = CLAMP(delta, -QY7_GYRO_MAX_DELTA,
-                          QY7_GYRO_MAX_DELTA);
-            s->gyro_raw = QY7_GYRO_ZERO + lrint(delta);
-        } else {
-            s->gyro_raw = QY7_GYRO_ZERO;
-        }
+        delta = CLAMP(delta, -QY7_GYRO_MAX_DELTA,
+                      QY7_GYRO_MAX_DELTA);
+        s->gyro_raw = QY7_GYRO_ZERO + lrint(delta);
+    } else {
+        s->gyro_raw = QY7_GYRO_ZERO;
     }
 
     timer_mod(s->motion_timer, now + QY7_MOTION_TICK_NS);
