@@ -1,10 +1,10 @@
 /*
  * Clarion QY7 (QY7221NL) speed pulse counter at 0xFFC5B000.
  *
- * Firmware proves that navdrv reads +0x0C, +0x10, +0x104 and +0x110;
- * +0x10 is the accumulated INTcount consumed by its speed worker.  The
- * pulses-per-kilometre calibration is not present in the inspected firmware,
- * so the machine supplies it as an explicitly estimated parameter.
+ * Navi.exe caller 0x003a21cc invokes the speed updater once per +0x10
+ * interrupt-count tick; the updater treats ten calls as one second.  +0x0c
+ * is the cumulative pulse count.  Navi.exe conversion constants at
+ * 0x003a5d00 and 0x003a5cac establish 5096 pulses per kilometre.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -36,7 +36,7 @@ struct ClarionQy7Spdpls {
     uint32_t speed_kmh;
     uint32_t pulses_per_km;
     uint32_t int_count;
-    uint32_t latch_count;
+    uint32_t pulse_total;
     uint32_t latch_data;
     uint32_t filter;
     uint32_t status;
@@ -70,10 +70,8 @@ static void spdpls_pulse(void *opaque)
     ClarionQy7Spdpls *s = opaque;
     uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
-    s->int_count++;
-    s->latch_count++;
-    trace_clarion_qy7_spdpls_pulse(s->int_count, now);
-    qemu_irq_pulse(s->irq);
+    s->pulse_total++;
+    trace_clarion_qy7_spdpls_pulse(s->pulse_total, now);
     timer_mod(s->pulse_timer, now + spdpls_next_period(s));
 }
 
@@ -82,8 +80,9 @@ static void spdpls_latch(void *opaque)
     ClarionQy7Spdpls *s = opaque;
     uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
-    s->latch_data = s->latch_count;
-    s->latch_count = 0;
+    s->latch_data = s->pulse_total & 0xffff;
+    s->int_count++;
+    qemu_irq_pulse(s->irq);
     timer_mod(s->latch_timer, now + SPDPLS_LATCH_WINDOW_NS);
 }
 
@@ -93,7 +92,7 @@ static void spdpls_reset(void *opaque)
     uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
     s->int_count = 0;
-    s->latch_count = 0;
+    s->pulse_total = 0;
     s->latch_data = 0;
     s->filter = 0;
     s->status = 0;
@@ -106,8 +105,8 @@ static void spdpls_reset(void *opaque)
     if (spdpls_rate(s)) {
         s->period_remainder = SPDPLS_NS_PER_HOUR % spdpls_rate(s);
         timer_mod(s->pulse_timer, now + spdpls_next_period(s));
-        timer_mod(s->latch_timer, now + SPDPLS_LATCH_WINDOW_NS);
     }
+    timer_mod(s->latch_timer, now + SPDPLS_LATCH_WINDOW_NS);
 }
 
 void clarion_qy7_spdpls_set_speed(ClarionQy7Spdpls *s, uint32_t speed_kmh)
@@ -118,13 +117,11 @@ void clarion_qy7_spdpls_set_speed(ClarionQy7Spdpls *s, uint32_t speed_kmh)
     s->speed_kmh = speed_kmh;
     s->phase_remainder = 0;
     timer_del(s->pulse_timer);
-    timer_del(s->latch_timer);
 
     rate = spdpls_rate(s);
     s->period_remainder = rate ? SPDPLS_NS_PER_HOUR % rate : 0;
     if (rate) {
         timer_mod(s->pulse_timer, now + spdpls_next_period(s));
-        timer_mod(s->latch_timer, now + SPDPLS_LATCH_WINDOW_NS);
     }
 }
 
@@ -168,7 +165,7 @@ static void spdpls_write(void *opaque, hwaddr addr, uint64_t value,
     case SPDPLS_COUNT_CLEAR:
         if (value & 1) {
             s->int_count = 0;
-            s->latch_count = 0;
+            s->pulse_total = 0;
             s->latch_data = 0;
         }
         break;

@@ -311,7 +311,7 @@ static void qy7_machine_instance_init(Object *obj)
     s->dipsw = CLARION_QY7_DEFAULT_DIPSW;
     s->wdt_pclk_hz = QY7_WDT_PCLK;
     s->speed_kmh = 0;
-    s->vehicle_pulses_per_km = 2500;
+    s->vehicle_pulses_per_km = 5096;
     s->gyro_raw = QY7_GYRO_ZERO;
     s->yaw_rate = 0.0;
     s->odometer_m = 0.0;
@@ -1246,8 +1246,8 @@ static void qy7_machine_class_init(ObjectClass *oc, const void *data)
         offsetof(QY7MachineState, vehicle_pulses_per_km),
         OBJ_PROP_FLAG_READWRITE);
     object_class_property_set_description(oc, "vehicle-pulses-per-km",
-        "Estimated vehicle pulse calibration in pulses/km; firmware constant "
-        "unknown (default estimate 2500)");
+        "Vehicle pulse calibration in pulses/km; Navi.exe constants "
+        "0x003a5d00 and 0x003a5cac correspond to 5096 (default 5096)");
     object_class_property_add_uint16_ptr(
         oc, "status0-inputs", offsetof(QY7MachineState, status0_inputs),
         OBJ_PROP_FLAG_READWRITE);
