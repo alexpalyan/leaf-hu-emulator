@@ -1,0 +1,10 @@
+{
+  "initial_heading": 90,
+  "points": [
+    {"east_m": 0, "north_m": 0, "speed_kmh": 40},
+    {"east_m": 400, "north_m": 0, "speed_kmh": 40},
+    {"east_m": 400, "north_m": 300, "speed_kmh": 40},
+    {"east_m": 0, "north_m": 300, "speed_kmh": 40},
+    {"east_m": 0, "north_m": 0, "speed_kmh": 40}
+  ]
+}

@@ -1,11 +1,13 @@
 /*
  * Time-only binary GPS receiver model for Clarion QY7 SCIF7.
  * The A0 time fields and framing follow the QY7 navigation driver.
- * Unknown navigation fields remain zero. The receiver ignores host commands.
+ * Speed, course and HDOP follow the Navi A0 parser; other fields stay zero.
+ * The receiver ignores host commands.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "qemu/osdep.h"
+#include <math.h>
 #include "qemu/log.h"
 #include "qemu/timer.h"
 #include "system/rtc.h"
@@ -18,6 +20,7 @@
 #define QY7_GPS_BYTE_NS (10 * NANOSECONDS_PER_SECOND / 4800)
 #define QY7_GPS_TX_RETRY_NS (10 * 1000 * 1000)
 #define QY7_GPS_RX_MAX 16
+#define QY7_GPS_FIELD_MAX 0x3fff
 
 struct ClarionQy7GpsState {
     DeviceState parent_obj;
@@ -32,9 +35,33 @@ struct ClarionQy7GpsState {
     unsigned tx_retries;
     bool rollover;
     uint8_t status;
+    bool startup_status_pending;
+    double lat;
+    double lon;
+    double speed_kmh;
+    double course;
     uint8_t rx[QY7_GPS_RX_MAX];
     unsigned rx_len;
 };
+
+static void qy7_gps_put_coordinate(uint8_t *out, double degrees)
+{
+    int32_t coordinate = llround(degrees * 60000.0);
+    uint32_t raw = (uint32_t)coordinate & 0x0fffffff;
+
+    for (int i = 0; i < 4; i++) {
+        out[i] = (raw >> (21 - 7 * i)) & 0x7f;
+    }
+}
+
+static void qy7_gps_put_u14(uint8_t *out, unsigned value)
+{
+    if (value > QY7_GPS_FIELD_MAX) {
+        value = QY7_GPS_FIELD_MAX;
+    }
+    out[0] = (value >> 7) & 0x7f;
+    out[1] = value & 0x7f;
+}
 
 static void qy7_gps_trace_frame(const char *direction, const uint8_t *buf,
                                 unsigned len)
@@ -78,6 +105,12 @@ static void qy7_gps_tx_pump(void *opaque)
     s->tx_offset = 0;
     s->tx_accepted = 0;
     s->tx_retries = 0;
+    if (s->startup_status_pending) {
+        s->startup_status_pending = false;
+        s->status = 0x20;
+        qemu_log_mask(LOG_UNIMP,
+                      "clarion-qy7-gps: startup status 0x01 -> 0x20\n");
+    }
 }
 
 static void qy7_gps_make_frame(ClarionQy7GpsState *s)
@@ -90,6 +123,14 @@ static void qy7_gps_make_frame(ClarionQy7GpsState *s)
     memset(s->tx, 0, sizeof(s->tx));
     s->tx[0] = 0xa0;
     s->tx[1] = s->status;
+    qy7_gps_put_coordinate(&s->tx[2], s->lat);
+    qy7_gps_put_coordinate(&s->tx[6], s->lon);
+    /* Navi's Dgyr uses an east-zero, counterclockwise course system. */
+    qy7_gps_put_u14(&s->tx[0x0c], llround(s->speed_kmh * 10.0));
+    qy7_gps_put_u14(&s->tx[0x0e],
+                    llround(fmod(fmod(90.0 - s->course, 360.0) + 360.0,
+                                 360.0) * 10.0));
+    s->tx[0x16] = 1;
     qemu_get_timedate(&now, 0);
     year = now.tm_year + 1900;
     month = now.tm_mon + 1;
@@ -156,6 +197,43 @@ void clarion_qy7_gps_set_sink(DeviceState *dev, ClarionQy7GpsSink fn,
     }
 }
 
+void clarion_qy7_gps_set_position(DeviceState *dev, double lat, double lon)
+{
+    ClarionQy7GpsState *s = CLARION_QY7_GPS(dev);
+
+    s->lat = lat;
+    s->lon = lon;
+}
+
+void clarion_qy7_gps_set_motion(DeviceState *dev, double speed_kmh,
+                                double course)
+{
+    ClarionQy7GpsState *s = CLARION_QY7_GPS(dev);
+
+    s->speed_kmh = speed_kmh;
+    s->course = course;
+}
+
+uint8_t clarion_qy7_gps_get_status(DeviceState *dev)
+{
+    ClarionQy7GpsState *s = CLARION_QY7_GPS(dev);
+
+    return s->status;
+}
+
+void clarion_qy7_gps_set_status(DeviceState *dev, uint8_t status)
+{
+    ClarionQy7GpsState *s = CLARION_QY7_GPS(dev);
+
+    s->startup_status_pending = false;
+    if (s->status != status) {
+        qemu_log_mask(LOG_UNIMP,
+                      "clarion-qy7-gps: status changed 0x%02x -> 0x%02x\n",
+                      s->status, status);
+        s->status = status;
+    }
+}
+
 void clarion_qy7_gps_rx_byte(DeviceState *dev, uint8_t byte)
 {
     ClarionQy7GpsState *s = CLARION_QY7_GPS(dev);
@@ -177,6 +255,7 @@ static void qy7_gps_realize(DeviceState *dev, Error **errp)
 {
     ClarionQy7GpsState *s = CLARION_QY7_GPS(dev);
 
+    s->startup_status_pending = s->status == 0x01;
     s->tick = timer_new_ns(QEMU_CLOCK_VIRTUAL, qy7_gps_tick, s);
     s->tx_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, qy7_gps_tx_pump, s);
     timer_mod(s->tick,
@@ -198,7 +277,7 @@ static const VMStateDescription vmstate_clarion_qy7_gps = {
 
 static const Property qy7_gps_properties[] = {
     DEFINE_PROP_BOOL("rollover", ClarionQy7GpsState, rollover, true),
-    DEFINE_PROP_UINT8("status", ClarionQy7GpsState, status, 0),
+    DEFINE_PROP_UINT8("status", ClarionQy7GpsState, status, 0x01),
 };
 
 static void qy7_gps_class_init(ObjectClass *oc, const void *data)

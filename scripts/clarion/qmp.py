@@ -53,6 +53,16 @@ class Qmp:
             if "return" in reply or "error" in reply:
                 return reply
 
+    def qom_set(self, name, value):
+        return self.cmd("qom-set", {"path": "/machine", "property": name,
+                                    "value": value})
+
+    def qom_get(self, name):
+        return self.cmd("qom-get", {"path": "/machine", "property": name})
+
+    def screendump(self, path):
+        return self.cmd("screendump", {"filename": path, "format": "png"})
+
     def _input(self, device, events):
         arguments = {"events": events}
         if device:
@@ -62,9 +72,11 @@ class Qmp:
     def tap(self, x, y, hold=0.15):
         pos = [
             {"type": "abs", "data": {"axis": "x",
-                                     "value": round(x * 0x7fff / (WIDTH - 1))}},
+                                     "value": round(x * 0x7fff /
+                                                    (WIDTH - 1))}},
             {"type": "abs", "data": {"axis": "y",
-                                     "value": round(y * 0x7fff / (HEIGHT - 1))}},
+                                     "value": round(y * 0x7fff /
+                                                    (HEIGHT - 1))}},
         ]
         for device in TOUCH_DEVICES:
             down = self._input(device, pos + [

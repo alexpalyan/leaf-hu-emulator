@@ -1,7 +1,9 @@
 /* Clarion QY7 bootloader machine. */
 #include "qemu/osdep.h"
+#include <math.h>
 #include "qemu/units.h"
 #include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "qemu/error-report.h"
 #include "hw/core/boards.h"
 #include "system/block-backend.h"
@@ -20,6 +22,7 @@
 #include "hw/misc/clarion_rcan.h"
 #include "hw/misc/clarion_bcm.h"
 #include "hw/misc/clarion_qy7_gps.h"
+#include "hw/misc/clarion_qy7_spdpls.h"
 #include "hw/misc/clarion_boards.h"
 #include "hw/display/clarion_du.h"
 #include "hw/display/clarion_2dg.h"
@@ -77,7 +80,13 @@
 #define QY7_SCIF3_BASE 0xffe43000
 #define QY7_SCIF5_BASE 0xffe45000
 #define QY7_SCIF7_BASE 0xffe47000
+#define QY7_MOTION_TICK_NS G_GUINT64_CONSTANT(100000000)
+#define QY7_GYRO_ZERO 0x5000
+#define QY7_GYRO_SCALE (0.00483)
+#define QY7_GYRO_MAX_DELTA 12000.0
 #define QY7_SCIF_SCSCR_RE 0x0010
+#define QY7_GYRO_BASE 0xffc5a000
+#define QY7_GYRO_SIZE 0x1000
 /*
  * The ninth serial_scif.dll instance (registry key Drivers\BuiltIn\HSCIF,
  * Index 8, Prefix SCI) is opened by the device manager at boot.  Its
@@ -95,8 +104,18 @@ typedef struct QY7MachineState {
     MachineState parent_obj;
     uint8_t dipsw;
     uint32_t wdt_pclk_hz;
+    uint32_t speed_kmh;
+    uint32_t vehicle_pulses_per_km;
+    uint32_t gyro_raw;
+    double yaw_rate;
+    double gps_speed_kmh;
+    double gps_course;
+    double odometer_m;
+    int64_t motion_last_ns;
     bool wdt_enabled;
     uint16_t status0_inputs;
+    bool reverse;
+    bool illumination;
     bool extint_model;
     bool paired_card;
     bool micom_on;
@@ -108,7 +127,13 @@ typedef struct QY7MachineState {
     bool gps_on;
     bool gps_rollover;
     uint8_t gps_status;
+    char *gps_lat;
+    char *gps_lon;
     DeviceState *gps;
+    ClarionQy7Spdpls *spdpls;
+    QEMUTimer *motion_timer;
+    MemoryRegion gyro;
+    MemoryRegion *gyro_a7_alias;
     char *can_log_path;
     char *can_replay_path;
     DeviceState *scpu;
@@ -130,6 +155,107 @@ typedef struct QY7DispSink {
 
 static void qy7_mcan_refresh(void *opaque);
 static void qy7_mcan_key_timer(void *opaque);
+static void qy7_motion_tick(void *opaque);
+static char *qy7_gps_lat_get(Object *obj, Error **errp);
+static void qy7_gps_lat_set(Object *obj, const char *value, Error **errp);
+static char *qy7_gps_lon_get(Object *obj, Error **errp);
+static void qy7_gps_lon_set(Object *obj, const char *value, Error **errp);
+static void qy7_get_gps_speed_kmh(Object *obj, Visitor *v, const char *name,
+                                  void *opaque, Error **errp);
+static void qy7_set_gps_speed_kmh(Object *obj, Visitor *v, const char *name,
+                                  void *opaque, Error **errp);
+static void qy7_get_gps_course(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp);
+static void qy7_set_gps_course(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp);
+
+static void qy7_gps_position_update(QY7MachineState *s)
+{
+    if (s->gps) {
+        clarion_qy7_gps_set_position(s->gps, g_ascii_strtod(s->gps_lat, NULL),
+                                     g_ascii_strtod(s->gps_lon, NULL));
+        clarion_qy7_gps_set_motion(s->gps, s->gps_speed_kmh, s->gps_course);
+    }
+}
+
+static void qy7_motion_tick(void *opaque)
+{
+    QY7MachineState *s = opaque;
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    int64_t elapsed_ns = now - s->motion_last_ns;
+    double elapsed_s = elapsed_ns > 0 ? elapsed_ns / 1e9 : 0.0;
+
+    s->motion_last_ns = now;
+    if (s->speed_kmh && elapsed_s > 0.0) {
+        s->odometer_m += s->speed_kmh * (elapsed_s / 3.6);
+    }
+    if (s->yaw_rate != 0.0 && s->speed_kmh > 0) {
+        double delta = s->yaw_rate / QY7_GYRO_SCALE;
+
+        delta = CLAMP(delta, -QY7_GYRO_MAX_DELTA,
+                      QY7_GYRO_MAX_DELTA);
+        s->gyro_raw = QY7_GYRO_ZERO + lrint(delta);
+    } else {
+        s->gyro_raw = QY7_GYRO_ZERO;
+    }
+
+    timer_mod(s->motion_timer, now + QY7_MOTION_TICK_NS);
+}
+
+static uint64_t qy7_gyro_read(void *opaque, hwaddr addr, unsigned int size)
+{
+    QY7MachineState *s = opaque;
+
+    switch (addr) {
+    case 0x030:
+        return s->gyro_raw;
+    case 0x034:
+    case 0x038:
+        return 0x5000;
+    case 0x03c:
+    case 0x040:
+        return 0x4000;
+    default:
+        qemu_log_mask(LOG_UNIMP,
+                      "qy7.gyro: unimplemented device read  "
+                      "(size %u, offset 0x%03" HWADDR_PRIx ")\n",
+                      size, addr);
+        return 0;
+    }
+}
+
+static void qy7_gyro_write(void *opaque, hwaddr addr, uint64_t value,
+                           unsigned int size)
+{
+    qemu_log_mask(LOG_UNIMP,
+                  "qy7.gyro: accepted initialization write "
+                  "(size %u, offset 0x%03" HWADDR_PRIx ", value 0x%08" PRIx64
+                  ")\n",
+                  size, addr, value);
+}
+
+static const MemoryRegionOps qy7_gyro_ops = {
+    .read = qy7_gyro_read,
+    .write = qy7_gyro_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = {
+        .min_access_size = 4,
+        .max_access_size = 4,
+        .unaligned = false,
+    },
+};
+
+static void qy7_gyro_init(QY7MachineState *s, MemoryRegion *sysmem)
+{
+    memory_region_init_io(&s->gyro, OBJECT(s), &qy7_gyro_ops, s, "qy7.gyro",
+                          QY7_GYRO_SIZE);
+    memory_region_add_subregion(sysmem, QY7_GYRO_BASE, &s->gyro);
+    s->gyro_a7_alias = g_new0(MemoryRegion, 1);
+    memory_region_init_alias(s->gyro_a7_alias, OBJECT(s), "qy7.gyro-a7",
+                             &s->gyro, 0, QY7_GYRO_SIZE);
+    memory_region_add_subregion(sysmem, A7ADDR(QY7_GYRO_BASE),
+                                s->gyro_a7_alias);
+}
 
 static void qy7_uart_tx(void *opaque, uint8_t byte)
 {
@@ -191,6 +317,11 @@ static void qy7_machine_instance_init(Object *obj)
 
     s->dipsw = CLARION_QY7_DEFAULT_DIPSW;
     s->wdt_pclk_hz = QY7_WDT_PCLK;
+    s->speed_kmh = 0;
+    s->vehicle_pulses_per_km = 5096;
+    s->gyro_raw = QY7_GYRO_ZERO;
+    s->yaw_rate = 0.0;
+    s->odometer_m = 0.0;
     s->wdt_enabled = true;
     /* Assumed asserted PowerMonitor input levels (STATUS0 bits 7 and 9). */
     s->status0_inputs = 0x0280;
@@ -204,9 +335,12 @@ static void qy7_machine_instance_init(Object *obj)
     s->micom_antitheft_release = true;
     s->gps_on = true;
     s->gps_rollover = true;
-    s->gps_status = 0;
+    s->gps_status = 0x01;
+    s->gps_lat = g_strdup("59.91");
+    s->gps_lon = g_strdup("10.75");
     s->mcan_refresh = timer_new_ns(QEMU_CLOCK_VIRTUAL, qy7_mcan_refresh, s);
     s->mcan_key_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, qy7_mcan_key_timer, s);
+    s->motion_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, qy7_motion_tick, s);
     object_property_add_uint8_ptr(obj, "micom-generic-reply-subcode",
         &s->micom_generic_reply_subcode, OBJ_PROP_FLAG_READWRITE);
     /*
@@ -230,6 +364,25 @@ static void qy7_machine_instance_init(Object *obj)
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_set_description(obj, "du-dotclk",
         "External DU pixel clock in Hz (0 disables vertical blank timing)");
+    object_property_add_str(obj, "gps-lat", qy7_gps_lat_get, qy7_gps_lat_set);
+    object_property_set_description(
+        obj, "gps-lat",
+        "Synthetic GPS latitude in decimal degrees (default 59.91)");
+    object_property_add_str(obj, "gps-lon", qy7_gps_lon_get, qy7_gps_lon_set);
+    object_property_set_description(
+        obj, "gps-lon",
+        "Synthetic GPS longitude in decimal degrees (default 10.75)");
+    object_property_add(obj, "gps-speed-kmh", "number",
+                        qy7_get_gps_speed_kmh, qy7_set_gps_speed_kmh,
+                        NULL, NULL);
+    object_property_set_description(
+        obj, "gps-speed-kmh",
+        "Synthetic GPS ground speed in km/h (default 0)");
+    object_property_add(obj, "gps-course", "number",
+                        qy7_get_gps_course, qy7_set_gps_course, NULL, NULL);
+    object_property_set_description(
+        obj, "gps-course",
+        "Synthetic GPS course in degrees, 0 = north, clockwise (default 0)");
 }
 
 static bool qy7_get_paired_card(Object *obj, Error **errp)
@@ -270,6 +423,188 @@ static bool qy7_get_gps_rollover(Object *obj, Error **errp)
 static void qy7_set_gps_rollover(Object *obj, bool value, Error **errp)
 {
     ((QY7MachineState *)obj)->gps_rollover = value;
+}
+
+static void qy7_get_gps_status(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
+{
+    QY7MachineState *s = (QY7MachineState *)obj;
+    uint8_t status = s->gps ? clarion_qy7_gps_get_status(s->gps) :
+                              s->gps_status;
+
+    (void)opaque;
+    visit_type_uint8(v, name, &status, errp);
+}
+
+static void qy7_set_gps_status(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
+{
+    QY7MachineState *s = (QY7MachineState *)obj;
+    uint8_t status;
+
+    (void)opaque;
+    if (!visit_type_uint8(v, name, &status, errp)) {
+        return;
+    }
+    s->gps_status = status;
+    if (s->gps) {
+        clarion_qy7_gps_set_status(s->gps, status);
+    }
+}
+
+static void qy7_get_speed_kmh(Object *obj, Visitor *v, const char *name,
+                              void *opaque, Error **errp)
+{
+    QY7MachineState *s = (QY7MachineState *)obj;
+    uint32_t speed_kmh = s->speed_kmh;
+
+    (void)opaque;
+    visit_type_uint32(v, name, &speed_kmh, errp);
+}
+
+static void qy7_set_speed_kmh(Object *obj, Visitor *v, const char *name,
+                              void *opaque, Error **errp)
+{
+    QY7MachineState *s = (QY7MachineState *)obj;
+    uint32_t speed_kmh;
+
+    (void)opaque;
+    if (!visit_type_uint32(v, name, &speed_kmh, errp)) {
+        return;
+    }
+    s->speed_kmh = speed_kmh;
+    if (s->spdpls) {
+        clarion_qy7_spdpls_set_speed(s->spdpls, speed_kmh);
+    }
+}
+
+static void qy7_get_odometer_m(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
+{
+    QY7MachineState *s = (QY7MachineState *)obj;
+    double odometer_m = s->odometer_m;
+
+    (void)opaque;
+    visit_type_number(v, name, &odometer_m, errp);
+}
+
+static void qy7_get_yaw_rate(Object *obj, Visitor *v, const char *name,
+                             void *opaque, Error **errp)
+{
+    QY7MachineState *s = (QY7MachineState *)obj;
+    double yaw_rate = s->yaw_rate;
+
+    (void)opaque;
+    visit_type_number(v, name, &yaw_rate, errp);
+}
+
+static void qy7_set_yaw_rate(Object *obj, Visitor *v, const char *name,
+                             void *opaque, Error **errp)
+{
+    QY7MachineState *s = (QY7MachineState *)obj;
+    double yaw_rate;
+
+    (void)opaque;
+    if (!visit_type_number(v, name, &yaw_rate, errp)) {
+        return;
+    }
+    if (!isfinite(yaw_rate)) {
+        error_setg(errp, "yaw-rate must be finite");
+        return;
+    }
+    s->yaw_rate = yaw_rate;
+}
+
+static void qy7_get_gps_speed_kmh(Object *obj, Visitor *v, const char *name,
+                                  void *opaque, Error **errp)
+{
+    double value = ((QY7MachineState *)obj)->gps_speed_kmh;
+
+    visit_type_number(v, name, &value, errp);
+}
+
+static void qy7_set_gps_speed_kmh(Object *obj, Visitor *v, const char *name,
+                                  void *opaque, Error **errp)
+{
+    QY7MachineState *s = (QY7MachineState *)obj;
+    double value;
+
+    if (!visit_type_number(v, name, &value, errp)) {
+        return;
+    }
+    if (!isfinite(value) || value < 0 || value > 1000) {
+        error_setg(errp, "gps-speed-kmh must be in [0, 1000]");
+        return;
+    }
+    s->gps_speed_kmh = value;
+    qy7_gps_position_update(s);
+}
+
+static void qy7_get_gps_course(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
+{
+    double value = ((QY7MachineState *)obj)->gps_course;
+
+    visit_type_number(v, name, &value, errp);
+}
+
+static void qy7_set_gps_course(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
+{
+    QY7MachineState *s = (QY7MachineState *)obj;
+    double value;
+
+    if (!visit_type_number(v, name, &value, errp)) {
+        return;
+    }
+    if (!isfinite(value)) {
+        error_setg(errp, "gps-course must be finite");
+        return;
+    }
+    s->gps_course = fmod(fmod(value, 360.0) + 360.0, 360.0);
+    qy7_gps_position_update(s);
+}
+
+static char *qy7_gps_lat_get(Object *obj, Error **errp)
+{
+    (void)errp;
+    return g_strdup(((QY7MachineState *)obj)->gps_lat);
+}
+
+static void qy7_gps_lat_set(Object *obj, const char *value, Error **errp)
+{
+    QY7MachineState *s = (QY7MachineState *)obj;
+    char *end;
+    double number = g_ascii_strtod(value, &end);
+
+    if (end == value || *end || !isfinite(number) || fabs(number) > 90) {
+        error_setg(errp, "gps-lat must be a decimal latitude in [-90, 90]");
+        return;
+    }
+    g_free(s->gps_lat);
+    s->gps_lat = g_strdup(value);
+    qy7_gps_position_update(s);
+}
+
+static char *qy7_gps_lon_get(Object *obj, Error **errp)
+{
+    (void)errp;
+    return g_strdup(((QY7MachineState *)obj)->gps_lon);
+}
+
+static void qy7_gps_lon_set(Object *obj, const char *value, Error **errp)
+{
+    QY7MachineState *s = (QY7MachineState *)obj;
+    char *end;
+    double number = g_ascii_strtod(value, &end);
+
+    if (end == value || *end || !isfinite(number) || fabs(number) > 180) {
+        error_setg(errp, "gps-lon must be a decimal longitude in [-180, 180]");
+        return;
+    }
+    g_free(s->gps_lon);
+    s->gps_lon = g_strdup(value);
+    qy7_gps_position_update(s);
 }
 
 static bool qy7_get_bcm(Object *obj, Error **errp)
@@ -507,6 +842,26 @@ static void qy7_set_extint_model(Object *obj, bool value, Error **errp)
     ((QY7MachineState *)obj)->extint_model = value;
 }
 
+static bool qy7_get_reverse(Object *obj, Error **errp)
+{
+    return ((QY7MachineState *)obj)->reverse;
+}
+
+static void qy7_set_reverse(Object *obj, bool value, Error **errp)
+{
+    ((QY7MachineState *)obj)->reverse = value;
+}
+
+static bool qy7_get_illumination(Object *obj, Error **errp)
+{
+    return ((QY7MachineState *)obj)->illumination;
+}
+
+static void qy7_set_illumination(Object *obj, bool value, Error **errp)
+{
+    ((QY7MachineState *)obj)->illumination = value;
+}
+
 static void qy7_set_micom_generic_reply(Object *obj, bool value, Error **errp)
 {
     ((QY7MachineState *)obj)->micom_generic_reply = value;
@@ -647,6 +1002,9 @@ static void qy7_init(MachineState *machine)
     }
     int2 = clarion_qy7_int2_init(sysmem, QY7_INT2_BASE, CPU(cpu),
                                  &cpu->env.intc_handle);
+    qmachine->spdpls = clarion_qy7_spdpls_init(
+        sysmem, 0xffc5b000, clarion_qy7_int2_bit22_irq(int2),
+        qmachine->speed_kmh, qmachine->vehicle_pulses_per_km);
     dmac = qdev_new(TYPE_CLARION_HPBDMA);
     qdev_prop_set_bit(dmac, "qy7-mode", true);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dmac), &error_fatal);
@@ -680,6 +1038,7 @@ static void qy7_init(MachineState *machine)
     memory_region_add_subregion(sysmem, QY7_RAM_BASE, ram);
     clarion_qy7_regs_init(sysmem, qmachine->dipsw,
                           qmachine->status0_inputs,
+                          &qmachine->reverse, &qmachine->illumination,
                           qmachine->extint_model,
                           clarion_qy7_int2_extirq(int2));
 
@@ -793,6 +1152,7 @@ static void qy7_init(MachineState *machine)
         object_property_add_child(OBJECT(qmachine), "gps-device",
                                   OBJECT(qmachine->gps));
         qdev_realize_and_unref(qmachine->gps, NULL, &error_fatal);
+        qy7_gps_position_update(qmachine);
         scif7->ublox = qmachine->gps;
         scif7->ublox_tx = clarion_qy7_gps_rx_byte;
         clarion_qy7_gps_set_sink(qmachine->gps, qy7_gps_sink, scif7);
@@ -807,6 +1167,10 @@ static void qy7_init(MachineState *machine)
     create_unimplemented_device("qy7.lbsc-window", 0xff801000, 0x3000);
     create_unimplemented_device("qy7.lbsc-window2", 0xff804100, 0xf00);
     create_unimplemented_device("qy7.gpio", 0xffc40000, 0x4000);
+    qy7_gyro_init(qmachine, sysmem);
+    create_unimplemented_device("qy7.spdpls", 0xffc5b000, 0x1000);
+    create_unimplemented_device("qy7.spdpls-a7", A7ADDR(0xffc5b000),
+                                0x1000);
     create_unimplemented_device("qy7.cpg", 0xffc80000, 0x1000);
     {
         DeviceState *wdt = qdev_new("clarion-qy7-wdt");
@@ -892,6 +1256,10 @@ static void qy7_init(MachineState *machine)
     create_unimplemented_device("qy7.intc", 0xffd00000, 0x1000);
     create_unimplemented_device("qy7.intc-usermask", 0xffd30000, 0x1000);
     create_unimplemented_device("qy7.intc2", 0xffd40000, 0x1000);
+
+    qmachine->motion_last_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    timer_mod(qmachine->motion_timer,
+              qmachine->motion_last_ns + QY7_MOTION_TICK_NS);
 }
 
 static void qy7_machine_init(MachineClass *mc)
@@ -921,9 +1289,47 @@ static void qy7_machine_class_init(ObjectClass *oc, const void *data)
         OBJ_PROP_FLAG_READWRITE);
     object_class_property_set_description(oc, "wdt",
         "Enable QY7 WDT counting (default on; off freezes the WDT timer)");
+    object_class_property_add(oc, "speed-kmh", "uint32", qy7_get_speed_kmh,
+                              qy7_set_speed_kmh, NULL, NULL);
+    object_class_property_set_description(
+        oc, "speed-kmh",
+        "Synthetic vehicle speed for the SPDPLS model; changes apply live "
+        "(default 0 km/h)");
+    object_class_property_add(oc, "odometer-m", "number",
+                              qy7_get_odometer_m, NULL, NULL, NULL);
+    object_class_property_set_description(oc, "odometer-m",
+        "Read-only distance traveled by the synthetic vehicle in meters");
+    object_class_property_add(oc, "yaw-rate", "number",
+                              qy7_get_yaw_rate, qy7_set_yaw_rate,
+                              NULL, NULL);
+    object_class_property_set_description(oc, "yaw-rate",
+        "Synthetic yaw rate in degrees per second; positive turns right");
+    object_class_property_add_uint32_ptr(oc, "gyro-raw",
+                                         offsetof(QY7MachineState, gyro_raw),
+                                         OBJ_PROP_FLAG_READWRITE);
+    object_class_property_set_description(
+        oc, "gyro-raw", "Raw gyro ADC channel 0 value (default 0x5000)");
+    object_class_property_add_uint32_ptr(
+        oc, "vehicle-pulses-per-km",
+        offsetof(QY7MachineState, vehicle_pulses_per_km),
+        OBJ_PROP_FLAG_READWRITE);
+    object_class_property_set_description(oc, "vehicle-pulses-per-km",
+        "Vehicle pulse calibration in pulses/km; Navi.exe constants "
+        "0x003a5d00 and 0x003a5cac correspond to 5096 (default 5096)");
     object_class_property_add_uint16_ptr(
         oc, "status0-inputs", offsetof(QY7MachineState, status0_inputs),
         OBJ_PROP_FLAG_READWRITE);
+    object_class_property_add_bool(oc, "reverse", qy7_get_reverse,
+                                   qy7_set_reverse);
+    object_class_property_set_description(oc, "reverse",
+        "Reverse gear input (STATUS1 bit 0, active low) as seen by navdrv "
+        "(default off)");
+    object_class_property_add_bool(oc, "illumination",
+                                   qy7_get_illumination,
+                                   qy7_set_illumination);
+    object_class_property_set_description(oc, "illumination",
+        "Illumination (lights) input (STATUS1 bit 1, active low) as seen by "
+        "navdrv (default off)");
     object_class_property_add_bool(oc, "extint-model",
                                    qy7_get_extint_model,
                                    qy7_set_extint_model);
@@ -944,10 +1350,12 @@ static void qy7_machine_class_init(ObjectClass *oc, const void *data)
                                    qy7_set_gps_rollover);
     object_class_property_set_description(oc, "gps-rollover",
         "Return a date 1024 weeks before the QEMU RTC date (default on)");
-    object_class_property_add_uint8_ptr(oc, "gps-status",
-        offsetof(QY7MachineState, gps_status), OBJ_PROP_FLAG_READWRITE);
+    object_class_property_add(oc, "gps-status", "uint8",
+                              qy7_get_gps_status, qy7_set_gps_status,
+                              NULL, NULL);
     object_class_property_set_description(oc, "gps-status",
-        "Byte at offset +1 in A0 (default 0; 0x42 suppresses system-time update)");
+        "Current A0 +1 status. Default sends one 0x01 time-only frame, then "
+        "uses 0x20; qom-set changes it live. 0x42 blocks system-time update");
     object_class_property_add_bool(oc, "micom", qy7_get_micom,
                                    qy7_set_micom);
     object_class_property_set_description(oc, "micom",
