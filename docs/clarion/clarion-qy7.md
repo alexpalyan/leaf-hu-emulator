@@ -13,34 +13,47 @@ Omit `--headless` to use the display window. The QY7 guest takes longer to
 reach its display than the QY8 guest. The machine connects its display
 microcontroller to SCIF3; panel input is represented as guest protocol frames.
 
-## GPS status and coordinates
+## GPS receiver
 
-The QY7 receiver sends A0 frames on SCIF7. Its startup sequence sends one
-time-only frame with status `0x01`, then changes to `0x20`, which passes the
-Navi position-status gate. The firmware does not establish how long a real
-receiver takes to acquire a fix; the one-frame delay is a minimal model
-inference. The machine-level `gps-status` property reports the current byte and
-can be changed while the guest is running. The value is applied to the next
-A0 frame:
+The QY7 receiver sends A0 frames on SCIF7. QEMU generates the receiver's
+calendar fields from the guest virtual clock. Use `-rtc base=...,clock=vm` to
+choose a repeatable base date; `clock=vm` advances that date with guest time.
+The `gps-rollover` machine property controls the modeled 1024-week date offset
+(default `on`). Set it to `off` when testing an unshifted date.
 
-```json
-{"execute":"qom-set","arguments":{"path":"/machine","property":"gps-status","value":1}}
-{"execute":"qom-set","arguments":{"path":"/machine","property":"gps-status","value":32}}
-```
+The machine properties are:
 
-Status bits have separate consumers. The driver suppresses `SetSystemTime`
-when both bits `0x02` and `0x40` are set (`0x42`); Navi's OBJ-time writer
-checks bit `0x02`. Position handling accepts only `0x00`, `0x10`, `0x20`, and
-`0x30`. The firmware does not identify which of these values represents loss
-of fix. `gps-lat` and `gps-lon` are decimal-degree machine properties; the
-receiver encodes them in A0 using the firmware-confirmed 60,000-units-per-
-degree scale. For example:
+| Property | Meaning |
+|---|---|
+| `gps` | Enable the receiver. |
+| `gps-status` | A0 status byte; `0x20` is accepted by the Navi position path. |
+| `gps-lat`, `gps-lon` | Current receiver position in decimal degrees. |
+| `gps-speed-kmh` | Current GPS ground speed in km/h. |
+| `gps-course` | Compass course in degrees: north is 0 and angles increase clockwise. |
+| `gps-rollover` | Apply the 1024-week offset to the receiver date. |
+
+The model encodes speed in 0.1 km/h units and converts compass course to Navi's
+Sensor info frame convention (east is zero; course increases counterclockwise).
+`+0x16` HDOP is 1. The startup sequence sends one time-only frame with status
+`0x01`, then changes to `0x20` after the first A0 frame is accepted.
+
+Start QY7 with a QMP socket and a virtual RTC. This example leaves the machine's
+configured starting position in place; choose a map card that covers that
+position, or set `gps-lat`/`gps-lon` to a position on the selected card before
+starting the route player.
 
 ```sh
-build-release/qemu-clarion --read-only --headless \\
-    -M clarion-qy7,gps-lat=40.00,gps-lon=-75.00 \\
-    qy7-nor.bin map-card.img
+build-release/qemu-clarion --read-only --headless qy7-nor.bin map-card.img \
+    -M clarion-qy7,gps=on,gps-status=32,gps-course=90,gps-rollover=off,wdt=off,dipsw=7 \
+    -rtc base=2026-11-03T12:00:00,clock=vm \
+    -icount shift=2,sleep=off \
+    -qmp unix:/tmp/qy7.sock,server=on,wait=off
 ```
+
+Wait for the map, then enable follow mode. If a map tap moved the view, use the
+upper `TILB` control to return to the vehicle-follow view. QMP screenshots can
+be saved while QEMU is headless.
+
 
 ## Gyro ADC inputs
 
@@ -85,69 +98,60 @@ Before this change bits 0 and 1 read as zero, which asserted both inputs.
 
 ## Speed pulse input
 
-The QY7 SPDPLS model uses the vehicle's `speed-kmh` property (default `0`,
-which emits no speed pulses). QOM changes to `speed-kmh` reschedule pulse and
-latch timers immediately, so the speed can be changed while the guest runs.
-Each pulse increments SPDPLS `INTcount` at
-`+0x010` and raises the modeled INT2 bit 22 input. The guest's INT2 mask-set
-and mask-clear register writes acknowledge and unmask the source; the exact
-hardware re-unmask path is not established by the inspected firmware, so this
-uses the minimal register-level behavior as an assumption. The firmware's
-pulses-per-kilometre calibration was not found, so `vehicle-pulses-per-km`
-is a separate estimated vehicle parameter, defaulting to 2500. Both options
-belong to the machine's vehicle configuration, while SPDPLS remains a SoC
-device. Select the vehicle properties on the machine:
+The QY7 SPDPLS model uses `speed-kmh` and `vehicle-pulses-per-km` (default
+5096) to synthesize pulse edges on the virtual clock. The firmware conversion
+constants at `Navi.exe` offsets `0x003a5d00` and `0x003a5cac` establish the
+5096 pulses/km scale. `odometer-m` reports cumulative traveled distance in
+meters since QEMU started.
 
-| SPDPLS offset | Model behavior | Evidence status |
-|---|---|---|
-| `+0x00c` | Returns pulse count accumulated in a 100 ms window. | Current model behavior; the physical latch semantics remain unproven. The tested period-at-100-kHz hypothesis did not produce an on-map position marker in the 20 and 40 km/h route runs. |
-| `+0x010` | Cumulative pulse counter; each synthesized pulse increments it. | Proven by the firmware accessor and builder use. |
-| `+0x01c` | Returns zero in the current model. | `navdrv` has a `Get500Kfreq` accessor, but its 36-byte NAV1 builder does not read this register. The firmware-side role remains unknown. |
-| `+0x104` | Returns zero. | Firmware reads it; no source or initialization value was identified. |
-| `+0x110` | Returns zero. | Firmware reads it; no source or initialization value was identified. |
+| SPDPLS offset | Model behavior |
+|---|---|
+| `+0x004` | Read/write filter value. |
+| `+0x008` | Writing bit 0 clears the pulse count, latch, and 100 ms tick count. |
+| `+0x00c` | Low 16 bits of the cumulative pulse count, latched every 100 ms. |
+| `+0x010` | Number of 100 ms latch ticks; the Navi handler runs once per tick and updates its speed estimate every ten ticks. |
+| `+0x018` | Status value; writing bit 0 clears it. |
+| `+0x01c` | 500 kHz frequency register, readable and writable; defaults to zero. |
+| `+0x104`, `+0x110` | Modeled zero-valued registers; writes are not modeled. |
+
+The model raises INT2 bit 22 at each 100 ms latch. With `speed-kmh=0`, no
+pulse timer runs; the periodic latch and interrupt remain active. These are
+emulator model semantics based on the current device implementation; they do
+not claim undocumented physical register behavior.
+
+## Driving a route
+
+`speed-kmh` drives SPDPLS and advances `odometer-m`. Positive `yaw-rate` turns
+the vehicle right. The `scripts/clarion/drive_route.py` player follows the
+read-only odometer and updates `gps-lat`, `gps-lon`, `gps-speed-kmh`, and
+`gps-course` at each poll. The GPS position is translated from the route's
+geometry to the machine's current starting position. The course supplied by a
+route is compass-based; the GPS model performs the Navi course conversion.
+
+A JSON route uses local east/north offsets in meters rather than geographic
+coordinates. Each point sets the speed for the segment that starts there.
+`initial_heading` is the vehicle's direction before the first route segment;
+keep it aligned with the vehicle at the start. For GPX input, the player uses
+trackpoint distances and bearings, and uses timestamps to derive segment speed
+when available; otherwise it uses `--speed`. The GPX geometry is also replayed
+from the machine's current GPS starting point.
+
+Example `docs/clarion/qy7-example-route.json` is a synthetic four-segment loop.
+Start QEMU as above, wait for the map and enable follow mode, then run:
 
 ```sh
-build-release/qemu-clarion --read-only --headless \
-    -M clarion-qy7,speed-kmh=60,vehicle-pulses-per-km=2500 \
-    qy7-nor.bin map-card.img
+python3 scripts/clarion/drive_route.py /tmp/qy7.sock \
+    --route docs/clarion/qy7-example-route.json \
+    --marks 0,400,700,1100,1400 --out route-output
 ```
 
-The estimate is not a QY7 firmware or hardware specification. `speed-kmh` is
-one machine-level vehicle property, so it can be shared by hardware and GPS
-models. The current GPS receiver emits time-only frames and does not read or
-transmit speed; this change does not add speed fields to its protocol. With
-the default zero speed, SPDPLS does not schedule pulse or latch timers.
+The player saves a PNG at each requested route distance and a `track.jsonl`
+log with distance, segment, speed, course, and yaw rate. It sets vehicle and
+GPS speeds to zero at the end. Check that the odometer advances approximately
+the route length and that the marker follows the route and turns in the
+expected direction. In the diagnostic menu with DIPSW=4, Sensor info shows
+`Vgps` and `Dgps`; these are the GPS speed and Navi-converted course values.
 
-## Driving the vehicle
-
-The machine accepts physical speed and yaw rate. `speed-kmh` drives the
-SPDPLS pulse model and advances the read-only `odometer-m` distance. The
-estimated calibration is 2500 pulses/km (0.4 m per pulse). On a 10 Hz
-`QEMU_CLOCK_VIRTUAL` timer, nonzero `yaw-rate` updates gyro ADC0 using
-`Δ = yaw-rate × 0.4 / (4.83e-4 × speed_mps)`, clamped to `|Δ| <= 12000`,
-with `gyro-raw = 0x5000 + Δ`. Positive yaw turns right. At zero speed, a
-nonzero yaw rate sets gyro ADC0 to `0x5000`. With `yaw-rate=0`, manual writes
-to `gyro-raw` remain in effect.
-
-GPS coordinates are external inputs and do not move with `speed-kmh` or
-`yaw-rate`. Set the receiver's starting position with `gps-lat` and `gps-lon`
-when launching QEMU; adjust the navigation position or course in the guest
-menu when needed. `odometer-m` is cumulative distance in meters since QEMU
-started.
-
-Set a starting position, then drive straight at 40 km/h and read the distance:
-
-```json
-{"execute":"qom-set","arguments":{"path":"/machine","property":"gps-lat","value":"59.91"}}
-{"execute":"qom-set","arguments":{"path":"/machine","property":"gps-lon","value":"10.75"}}
-{"execute":"qom-set","arguments":{"path":"/machine","property":"speed-kmh","value":40}}
-{"execute":"qom-get","arguments":{"path":"/machine","property":"odometer-m"}}
-```
-
-`tools/gps_track.py` can drive a JSON route using `speed-kmh`, `yaw-rate`, and
-`odometer-m`. GPS coordinates in the route are used only to calculate segment
-lengths and turn angles; the tool does not write GPS position or synthesize
-gyro ADC values.
 
 ## Front-panel keys
 
