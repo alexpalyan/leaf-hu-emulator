@@ -108,6 +108,8 @@ typedef struct QY7MachineState {
     uint32_t vehicle_pulses_per_km;
     uint32_t gyro_raw;
     double yaw_rate;
+    double gps_speed_kmh;
+    double gps_course;
     double odometer_m;
     int64_t motion_last_ns;
     bool wdt_enabled;
@@ -158,12 +160,21 @@ static char *qy7_gps_lat_get(Object *obj, Error **errp);
 static void qy7_gps_lat_set(Object *obj, const char *value, Error **errp);
 static char *qy7_gps_lon_get(Object *obj, Error **errp);
 static void qy7_gps_lon_set(Object *obj, const char *value, Error **errp);
+static void qy7_get_gps_speed_kmh(Object *obj, Visitor *v, const char *name,
+                                  void *opaque, Error **errp);
+static void qy7_set_gps_speed_kmh(Object *obj, Visitor *v, const char *name,
+                                  void *opaque, Error **errp);
+static void qy7_get_gps_course(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp);
+static void qy7_set_gps_course(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp);
 
 static void qy7_gps_position_update(QY7MachineState *s)
 {
     if (s->gps) {
         clarion_qy7_gps_set_position(s->gps, g_ascii_strtod(s->gps_lat, NULL),
                                      g_ascii_strtod(s->gps_lon, NULL));
+        clarion_qy7_gps_set_motion(s->gps, s->gps_speed_kmh, s->gps_course);
     }
 }
 
@@ -361,6 +372,17 @@ static void qy7_machine_instance_init(Object *obj)
     object_property_set_description(
         obj, "gps-lon",
         "Synthetic GPS longitude in decimal degrees (default 10.75)");
+    object_property_add(obj, "gps-speed-kmh", "number",
+                        qy7_get_gps_speed_kmh, qy7_set_gps_speed_kmh,
+                        NULL, NULL);
+    object_property_set_description(
+        obj, "gps-speed-kmh",
+        "Synthetic GPS ground speed in km/h (default 0)");
+    object_property_add(obj, "gps-course", "number",
+                        qy7_get_gps_course, qy7_set_gps_course, NULL, NULL);
+    object_property_set_description(
+        obj, "gps-course",
+        "Synthetic GPS course in degrees, 0 = north, clockwise (default 0)");
 }
 
 static bool qy7_get_paired_card(Object *obj, Error **errp)
@@ -491,6 +513,56 @@ static void qy7_set_yaw_rate(Object *obj, Visitor *v, const char *name,
         return;
     }
     s->yaw_rate = yaw_rate;
+}
+
+static void qy7_get_gps_speed_kmh(Object *obj, Visitor *v, const char *name,
+                                  void *opaque, Error **errp)
+{
+    double value = ((QY7MachineState *)obj)->gps_speed_kmh;
+
+    visit_type_number(v, name, &value, errp);
+}
+
+static void qy7_set_gps_speed_kmh(Object *obj, Visitor *v, const char *name,
+                                  void *opaque, Error **errp)
+{
+    QY7MachineState *s = (QY7MachineState *)obj;
+    double value;
+
+    if (!visit_type_number(v, name, &value, errp)) {
+        return;
+    }
+    if (!isfinite(value) || value < 0 || value > 1000) {
+        error_setg(errp, "gps-speed-kmh must be in [0, 1000]");
+        return;
+    }
+    s->gps_speed_kmh = value;
+    qy7_gps_position_update(s);
+}
+
+static void qy7_get_gps_course(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
+{
+    double value = ((QY7MachineState *)obj)->gps_course;
+
+    visit_type_number(v, name, &value, errp);
+}
+
+static void qy7_set_gps_course(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
+{
+    QY7MachineState *s = (QY7MachineState *)obj;
+    double value;
+
+    if (!visit_type_number(v, name, &value, errp)) {
+        return;
+    }
+    if (!isfinite(value)) {
+        error_setg(errp, "gps-course must be finite");
+        return;
+    }
+    s->gps_course = fmod(fmod(value, 360.0) + 360.0, 360.0);
+    qy7_gps_position_update(s);
 }
 
 static char *qy7_gps_lat_get(Object *obj, Error **errp)
