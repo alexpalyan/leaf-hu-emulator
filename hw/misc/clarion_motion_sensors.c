@@ -57,6 +57,8 @@ struct ClarionMotionSensorsState {
     uint32_t gyro_raw;
     uint64_t period_remainder;
     uint64_t phase_remainder;
+    int64_t motion_last_ns;
+    double odometer_m;
     double yaw_rate;
     bool level_irq;
     bool a7_alias;
@@ -109,6 +111,13 @@ static void motion_tick(void *opaque)
 {
     ClarionMotionSensorsState *s = opaque;
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    int64_t elapsed_ns = now - s->motion_last_ns;
+    double elapsed_s = elapsed_ns > 0 ? elapsed_ns / 1e9 : 0.0;
+
+    s->motion_last_ns = now;
+    if (s->speed_kmh && elapsed_s > 0.0) {
+        s->odometer_m += s->speed_kmh * (elapsed_s / 3.6);
+    }
     if (s->yaw_rate != 0.0 && s->speed_kmh > 0) {
         double delta = s->yaw_rate / MOTION_GYRO_SCALE;
 
@@ -136,6 +145,8 @@ static void motion_reset(void *opaque)
     s->observe_b = 0;
     s->gyro_raw = MOTION_GYRO_ZERO;
     s->phase_remainder = 0;
+    s->odometer_m = 0.0;
+    s->motion_last_ns = now;
     if (s->level_irq) {
         qemu_irq_lower(s->irq);
     }
@@ -188,6 +199,11 @@ void clarion_motion_sensors_set_gyro_raw(DeviceState *dev, uint32_t gyro_raw)
 uint32_t clarion_motion_sensors_get_gyro_raw(DeviceState *dev)
 {
     return CLARION_MOTION_SENSORS(dev)->gyro_raw;
+}
+
+double clarion_motion_sensors_get_odometer_m(DeviceState *dev)
+{
+    return CLARION_MOTION_SENSORS(dev)->odometer_m;
 }
 
 static uint64_t motion_gyro_read(void *opaque, hwaddr addr, unsigned size)

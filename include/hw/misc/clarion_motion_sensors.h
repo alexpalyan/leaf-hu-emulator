@@ -15,5 +15,6 @@ void clarion_motion_sensors_set_speed(DeviceState *dev, uint32_t speed_kmh);
 void clarion_motion_sensors_set_yaw_rate(DeviceState *dev, double yaw_rate);
 void clarion_motion_sensors_set_gyro_raw(DeviceState *dev, uint32_t gyro_raw);
 uint32_t clarion_motion_sensors_get_gyro_raw(DeviceState *dev);
+double clarion_motion_sensors_get_odometer_m(DeviceState *dev);
 
 #endif

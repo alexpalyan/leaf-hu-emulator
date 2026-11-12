@@ -25,6 +25,7 @@
 #include "qemu/osdep.h"
 #include <math.h>
 #include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "qemu/error-report.h"
 #include "qemu/units.h"
 #include "qemu/log.h"
@@ -49,6 +50,7 @@
 #include "hw/misc/clarion_shcore.h"
 #include "hw/misc/clarion_dispmicom.h"
 #include "hw/misc/clarion_ublox.h"
+#include "hw/misc/clarion_motion_sensors.h"
 #include "hw/dma/clarion_hpbdma.h"
 #include "hw/dma/clarion_lbdma.h"
 #include "hw/sd/sd.h"
@@ -1760,6 +1762,7 @@ struct Qy8MachineState {
     DeviceState *micom;
     DeviceState *dispmicom;
     DeviceState *ublox;
+    DeviceState *motion_sensors;
     DeviceState *sdhi[QY8_NUM_SDHI];
     DeviceState *can;
     DeviceState *i2c4;
@@ -1791,7 +1794,10 @@ struct Qy8MachineState {
     char *gps_lat;
     char *gps_lon;
     char *gps_speed;
-    char *gps_course;
+    double gps_speed_kmh;
+    double gps_course;
+    uint32_t speed_kmh;
+    double yaw_rate;
     bool i2c4_on;               /* opt-in bounded R-Car I2C4 model */
     bool i2c4_recorder_on;      /* opt-in I2C4 transaction recorder */
     bool tma460_on;             /* opt-in bounded TMA460 model */
@@ -2264,6 +2270,20 @@ static void qy8_init(MachineState *machine)
     sysbus_connect_irq(gicbusdev, 1,
                        qdev_get_gpio_in(DEVICE(s->cpu), ARM_CPU_FIQ));
 
+    s->motion_sensors = qdev_new(TYPE_CLARION_MOTION_SENSORS);
+    qdev_prop_set_bit(s->motion_sensors, "level-irq", true);
+    qdev_prop_set_bit(s->motion_sensors, "a7-alias", false);
+    qdev_prop_set_uint32(s->motion_sensors, "pulses-per-km", 5096);
+    qdev_prop_set_uint32(s->motion_sensors, "speed-kmh", s->speed_kmh);
+    object_property_add_child(OBJECT(s), "motion-sensors",
+                              OBJECT(s->motion_sensors));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(s->motion_sensors), &error_fatal);
+    clarion_motion_sensors_set_yaw_rate(s->motion_sensors, s->yaw_rate);
+    sysbus_connect_irq(SYS_BUS_DEVICE(s->motion_sensors), 0,
+                       qdev_get_gpio_in(s->gic, 109));
+    sysbus_mmio_map(SYS_BUS_DEVICE(s->motion_sensors), 0, 0xffc5a000);
+    sysbus_mmio_map(SYS_BUS_DEVICE(s->motion_sensors), 1, 0xffc5b000);
+
     if (s->g2d_on) {
         s->g2d = qdev_new(TYPE_CLARION_2DG);
         if (s->g2d_log && *s->g2d_log) {
@@ -2398,7 +2418,7 @@ static void qy8_init(MachineState *machine)
                                    g_ascii_strtod(s->gps_lat, NULL),
                                    g_ascii_strtod(s->gps_lon, NULL),
                                    g_ascii_strtod(s->gps_speed, NULL),
-                                   g_ascii_strtod(s->gps_course, NULL));
+                                   s->gps_course);
     }
 
     /* --- SCIF --- */
@@ -2797,8 +2817,73 @@ static void qy8_gps_position_update(Qy8MachineState *s)
                                    g_ascii_strtod(s->gps_lat, NULL),
                                    g_ascii_strtod(s->gps_lon, NULL),
                                    g_ascii_strtod(s->gps_speed, NULL),
-                                   g_ascii_strtod(s->gps_course, NULL));
+                                   s->gps_course);
     }
+}
+
+static void qy8_get_speed_kmh(Object *obj, Visitor *v, const char *name,
+                              void *opaque, Error **errp)
+{
+    uint32_t value = QY8_MACHINE(obj)->speed_kmh;
+
+    (void)opaque;
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void qy8_set_speed_kmh(Object *obj, Visitor *v, const char *name,
+                              void *opaque, Error **errp)
+{
+    Qy8MachineState *s = QY8_MACHINE(obj);
+    uint32_t value;
+
+    (void)opaque;
+    if (!visit_type_uint32(v, name, &value, errp)) {
+        return;
+    }
+    s->speed_kmh = value;
+    if (s->motion_sensors) {
+        clarion_motion_sensors_set_speed(s->motion_sensors, value);
+    }
+}
+
+static void qy8_get_yaw_rate(Object *obj, Visitor *v, const char *name,
+                             void *opaque, Error **errp)
+{
+    double value = QY8_MACHINE(obj)->yaw_rate;
+
+    (void)opaque;
+    visit_type_number(v, name, &value, errp);
+}
+
+static void qy8_set_yaw_rate(Object *obj, Visitor *v, const char *name,
+                             void *opaque, Error **errp)
+{
+    Qy8MachineState *s = QY8_MACHINE(obj);
+    double value;
+
+    (void)opaque;
+    if (!visit_type_number(v, name, &value, errp)) {
+        return;
+    }
+    if (!isfinite(value)) {
+        error_setg(errp, "yaw-rate must be finite");
+        return;
+    }
+    s->yaw_rate = value;
+    if (s->motion_sensors) {
+        clarion_motion_sensors_set_yaw_rate(s->motion_sensors, value);
+    }
+}
+
+static void qy8_get_odometer_m(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
+{
+    Qy8MachineState *s = QY8_MACHINE(obj);
+    double value = s->motion_sensors ?
+        clarion_motion_sensors_get_odometer_m(s->motion_sensors) : 0.0;
+
+    (void)opaque;
+    visit_type_number(v, name, &value, errp);
 }
 
 static char *qy8_gps_lat_get(Object *obj, Error **errp)
@@ -2849,6 +2934,35 @@ static char *qy8_gps_speed_get(Object *obj, Error **errp)
     return g_strdup(QY8_MACHINE(obj)->gps_speed);
 }
 
+static void qy8_get_gps_speed_kmh(Object *obj, Visitor *v, const char *name,
+                                  void *opaque, Error **errp)
+{
+    double value = QY8_MACHINE(obj)->gps_speed_kmh;
+
+    (void)opaque;
+    visit_type_number(v, name, &value, errp);
+}
+
+static void qy8_set_gps_speed_kmh(Object *obj, Visitor *v, const char *name,
+                                  void *opaque, Error **errp)
+{
+    Qy8MachineState *s = QY8_MACHINE(obj);
+    double value;
+
+    (void)opaque;
+    if (!visit_type_number(v, name, &value, errp)) {
+        return;
+    }
+    if (!isfinite(value) || value < 0 || value > 1000) {
+        error_setg(errp, "gps-speed-kmh must be in [0, 1000]");
+        return;
+    }
+    s->gps_speed_kmh = value;
+    g_free(s->gps_speed);
+    s->gps_speed = g_strdup_printf("%.9g", value * 3600.0 / 1852.0);
+    qy8_gps_position_update(s);
+}
+
 static void qy8_gps_speed_set(Object *obj, const char *value, Error **errp)
 {
     Qy8MachineState *s = QY8_MACHINE(obj);
@@ -2861,28 +2975,34 @@ static void qy8_gps_speed_set(Object *obj, const char *value, Error **errp)
     }
     g_free(s->gps_speed);
     s->gps_speed = g_strdup(value);
+    s->gps_speed_kmh = number * 1852.0 / 3600.0;
     qy8_gps_position_update(s);
 }
 
-static char *qy8_gps_course_get(Object *obj, Error **errp)
+static void qy8_gps_course_get(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
 {
-    (void)errp;
-    return g_strdup(QY8_MACHINE(obj)->gps_course);
+    double value = QY8_MACHINE(obj)->gps_course;
+
+    (void)opaque;
+    visit_type_number(v, name, &value, errp);
 }
 
-static void qy8_gps_course_set(Object *obj, const char *value, Error **errp)
+static void qy8_gps_course_set(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
 {
     Qy8MachineState *s = QY8_MACHINE(obj);
-    char *end;
-    double number = g_ascii_strtod(value, &end);
+    double value;
 
-    if (end == value || *end || !isfinite(number) || number < 0 ||
-        number >= 360) {
+    (void)opaque;
+    if (!visit_type_number(v, name, &value, errp)) {
+        return;
+    }
+    if (!isfinite(value) || value < 0 || value >= 360) {
         error_setg(errp, "gps-course must be in [0, 360) degrees");
         return;
     }
-    g_free(s->gps_course);
-    s->gps_course = g_strdup(value);
+    s->gps_course = value;
     qy8_gps_position_update(s);
 }
 
@@ -3142,6 +3262,19 @@ static void qy8_machine_instance_init(Object *obj)
     object_property_set_description(obj, "dipsw",
         "boot mode from board controller DIPSW, 0..7 (5 = NORM(RES) with log)");
 
+    object_property_add(obj, "speed-kmh", "uint32", qy8_get_speed_kmh,
+                        qy8_set_speed_kmh, NULL, NULL);
+    object_property_set_description(obj, "speed-kmh",
+        "Synthetic vehicle speed for motion sensors (default 0 km/h)");
+    object_property_add(obj, "yaw-rate", "number", qy8_get_yaw_rate,
+                        qy8_set_yaw_rate, NULL, NULL);
+    object_property_set_description(obj, "yaw-rate",
+        "Synthetic yaw rate in degrees per second; positive turns right");
+    object_property_add(obj, "odometer-m", "number", qy8_get_odometer_m,
+                        NULL, NULL, NULL);
+    object_property_set_description(obj, "odometer-m",
+        "Read-only distance traveled by the synthetic vehicle in meters");
+
     /*
      * Board companion MCU. Enabled by default because the chip is present on
      * hardware and the kernel cannot initialize the link without its response.
@@ -3167,7 +3300,7 @@ static void qy8_machine_instance_init(Object *obj)
     s->gps_lat = g_strdup("50.4501");
     s->gps_lon = g_strdup("30.5234");
     s->gps_speed = g_strdup("0");
-    s->gps_course = g_strdup("0");
+    s->gps_course = 0.0;
     object_property_add_bool(obj, "gps", qy8_gps_get, qy8_gps_set);
     object_property_set_description(obj, "gps",
                                     "built-in u-blox receiver on SCIF2");
@@ -3175,8 +3308,13 @@ static void qy8_machine_instance_init(Object *obj)
     object_property_add_str(obj, "gps-lon", qy8_gps_lon_get, qy8_gps_lon_set);
     object_property_add_str(obj, "gps-speed", qy8_gps_speed_get,
                             qy8_gps_speed_set);
-    object_property_add_str(obj, "gps-course", qy8_gps_course_get,
-                            qy8_gps_course_set);
+    object_property_add(obj, "gps-speed-kmh", "number",
+                        qy8_get_gps_speed_kmh, qy8_set_gps_speed_kmh,
+                        NULL, NULL);
+    object_property_set_description(obj, "gps-speed-kmh",
+        "Synthetic GPS ground speed in km/h (default 0)");
+    object_property_add(obj, "gps-course", "number", qy8_gps_course_get,
+                        qy8_gps_course_set, NULL, NULL);
 
     s->i2c4_on = true;
     object_property_add_bool(obj, "i2c4", qy8_i2c4_get, qy8_i2c4_set);
