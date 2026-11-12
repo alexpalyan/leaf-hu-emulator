@@ -18,11 +18,14 @@ system_ss.add(when: 'CONFIG_A9SCU', if_true: files('a9scu.c'))
 system_ss.add(when: 'CONFIG_ARM11SCU', if_true: files('arm11scu.c'))
 
 system_ss.add(when: 'CONFIG_ARM_V7M', if_true: files('armv7m_ras.c'))
-system_ss.add(when: 'CONFIG_CLARION_QY8', if_true: files('clarion_shcore.c'))
+system_ss.add(when: 'CONFIG_CLARION_QY8', if_true: files(
+  'clarion_shcore.c',
+  'clarion_motion_sensors.c',
+))
 system_ss.add(when: 'CONFIG_CLARION_QY7', if_true: files(
   'clarion_qy7_regs.c',
   'clarion_rcan.c',
-  'clarion_qy7_spdpls.c',
+  'clarion_motion_sensors.c',
 ))
 
 # Mac devices
