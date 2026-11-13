@@ -2,6 +2,7 @@
 
 # clarion_motion_sensors.c
 clarion_motion_sensors_pulse(uint32_t count, uint64_t virtual_ns) "count %u virtual_ns %" PRIu64
+clarion_motion_sensors_pulse_lateness(uint64_t now_ns, int64_t deadline_ns, uint64_t lateness_ns) "now_ns %" PRIu64 " deadline_ns %" PRId64 " lateness_ns %" PRIu64
 clarion_motion_sensors_gyro_read(uint64_t virtual_ns, uint64_t host_ns, uint64_t offset, uint32_t value) "virtual_ns %" PRIu64 " host_ns %" PRIu64 " offset 0x%03" PRIx64 " value 0x%08x"
 
 # allwinner-cpucfg.c

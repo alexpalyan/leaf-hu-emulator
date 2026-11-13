@@ -60,6 +60,7 @@ struct ClarionMotionSensorsState {
     uint32_t gyro_zero;
     uint64_t period_remainder;
     uint64_t phase_remainder;
+    int64_t pulse_deadline_ns;
     int64_t motion_last_ns;
     double odometer_m;
     double yaw_rate;
@@ -85,14 +86,40 @@ static uint64_t motion_next_period(ClarionMotionSensorsState *s)
     return MAX(period, 1);
 }
 
+static void motion_sync_pulses(ClarionMotionSensorsState *s, uint64_t now)
+{
+    uint32_t target = (uint32_t)floor(s->odometer_m * s->pulses_per_km /
+                                      1000.0);
+
+    while (s->pulse_total != target) {
+        s->pulse_total++;
+        trace_clarion_motion_sensors_pulse(s->pulse_total, now);
+    }
+}
+
+static void motion_update_odometer(ClarionMotionSensorsState *s, int64_t now)
+{
+    int64_t elapsed_ns = now - s->motion_last_ns;
+    double elapsed_s = elapsed_ns > 0 ? elapsed_ns / 1e9 : 0.0;
+
+    s->motion_last_ns = now;
+    if (s->speed_kmh && elapsed_s > 0.0) {
+        s->odometer_m += s->speed_kmh * (elapsed_s / 3.6);
+    }
+    motion_sync_pulses(s, now);
+}
+
 static void motion_pulse(void *opaque)
 {
     ClarionMotionSensorsState *s = opaque;
     uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    int64_t deadline = s->pulse_deadline_ns;
 
-    s->pulse_total++;
-    trace_clarion_motion_sensors_pulse(s->pulse_total, now);
-    timer_mod(s->pulse_timer, now + motion_next_period(s));
+    trace_clarion_motion_sensors_pulse_lateness(
+        now, deadline, now > deadline ? now - deadline : 0);
+    motion_update_odometer(s, now);
+    s->pulse_deadline_ns = now + motion_next_period(s);
+    timer_mod(s->pulse_timer, s->pulse_deadline_ns);
 }
 
 static void motion_latch(void *opaque)
@@ -114,13 +141,8 @@ static void motion_tick(void *opaque)
 {
     ClarionMotionSensorsState *s = opaque;
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    int64_t elapsed_ns = now - s->motion_last_ns;
-    double elapsed_s = elapsed_ns > 0 ? elapsed_ns / 1e9 : 0.0;
 
-    s->motion_last_ns = now;
-    if (s->speed_kmh && elapsed_s > 0.0) {
-        s->odometer_m += s->speed_kmh * (elapsed_s / 3.6);
-    }
+    motion_update_odometer(s, now);
     if (s->yaw_rate != 0.0 && s->speed_kmh > 0) {
         double delta = s->yaw_rate / MOTION_GYRO_SCALE;
 
@@ -154,11 +176,13 @@ static void motion_reset(void *opaque)
         qemu_irq_lower(s->irq);
     }
     timer_del(s->pulse_timer);
+    s->pulse_deadline_ns = -1;
     timer_del(s->latch_timer);
     timer_del(s->motion_timer);
     s->period_remainder = rate ? MOTION_NS_PER_HOUR % rate : 0;
     if (rate) {
-        timer_mod(s->pulse_timer, now + motion_next_period(s));
+        s->pulse_deadline_ns = now + motion_next_period(s);
+        timer_mod(s->pulse_timer, s->pulse_deadline_ns);
     }
     timer_mod(s->latch_timer, now + MOTION_TICK_NS);
     timer_mod(s->motion_timer, now + MOTION_TICK_NS);
@@ -174,13 +198,16 @@ static void motion_set_speed(ClarionMotionSensorsState *s, uint32_t speed_kmh)
     uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     uint64_t rate;
 
+    motion_update_odometer(s, now);
     s->speed_kmh = speed_kmh;
     s->phase_remainder = 0;
     timer_del(s->pulse_timer);
+    s->pulse_deadline_ns = -1;
     rate = motion_rate(s);
     s->period_remainder = rate ? MOTION_NS_PER_HOUR % rate : 0;
     if (rate) {
-        timer_mod(s->pulse_timer, now + motion_next_period(s));
+        s->pulse_deadline_ns = now + motion_next_period(s);
+        timer_mod(s->pulse_timer, s->pulse_deadline_ns);
     }
 }
 
