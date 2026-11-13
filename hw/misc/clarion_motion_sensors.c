@@ -22,7 +22,8 @@
 #define MOTION_B_SIZE 0x1000
 #define MOTION_TICK_NS G_GUINT64_CONSTANT(100000000)
 #define MOTION_NS_PER_HOUR G_GUINT64_CONSTANT(3600000000000)
-#define MOTION_GYRO_ZERO 0x5000
+#define MOTION_GYRO_DEFAULT_OFFSET 0x030
+#define MOTION_GYRO_DEFAULT_ZERO 0x5000
 #define MOTION_GYRO_SCALE 0.00483
 #define MOTION_GYRO_MAX_DELTA 12000.0
 
@@ -55,6 +56,8 @@ struct ClarionMotionSensorsState {
     uint32_t offset_b;
     uint32_t observe_b;
     uint32_t gyro_raw;
+    uint32_t gyro_offset;
+    uint32_t gyro_zero;
     uint64_t period_remainder;
     uint64_t phase_remainder;
     int64_t motion_last_ns;
@@ -122,9 +125,9 @@ static void motion_tick(void *opaque)
         double delta = s->yaw_rate / MOTION_GYRO_SCALE;
 
         delta = CLAMP(delta, -MOTION_GYRO_MAX_DELTA, MOTION_GYRO_MAX_DELTA);
-        s->gyro_raw = MOTION_GYRO_ZERO + lrint(delta);
+        s->gyro_raw = s->gyro_zero + lrint(delta);
     } else {
-        s->gyro_raw = MOTION_GYRO_ZERO;
+        s->gyro_raw = s->gyro_zero;
     }
     timer_mod(s->motion_timer, now + MOTION_TICK_NS);
 }
@@ -143,7 +146,7 @@ static void motion_reset(void *opaque)
     s->freq_500k = 0;
     s->offset_b = 0;
     s->observe_b = 0;
-    s->gyro_raw = MOTION_GYRO_ZERO;
+    s->gyro_raw = s->gyro_zero;
     s->phase_remainder = 0;
     s->odometer_m = 0.0;
     s->motion_last_ns = now;
@@ -209,23 +212,30 @@ double clarion_motion_sensors_get_odometer_m(DeviceState *dev)
 static uint64_t motion_gyro_read(void *opaque, hwaddr addr, unsigned size)
 {
     ClarionMotionSensorsState *s = opaque;
+    uint32_t value;
 
     switch (addr) {
-    case 0x030:
-        return s->gyro_raw;
     case 0x034:
     case 0x038:
-        return 0x5000;
+        value = 0x5000;
+        break;
     case 0x03c:
-    case 0x040:
-        return 0x4000;
+        value = 0x4000;
+        break;
     default:
-        qemu_log_mask(LOG_UNIMP,
-                      "clarion-motion-sensors: unimplemented gyro read "
-                      "(size %u, offset 0x%03" HWADDR_PRIx ")\n",
-                      size, addr);
-        return 0;
+        if (addr == s->gyro_offset) {
+            value = s->gyro_raw;
+        } else {
+            qemu_log_mask(LOG_UNIMP,
+                          "clarion-motion-sensors: unimplemented gyro read "
+                          "(size %u, offset 0x%03" HWADDR_PRIx ")\n",
+                          size, addr);
+            value = 0;
+        }
+        break;
     }
+    trace_clarion_motion_sensors_gyro_read(addr, value);
+    return value;
 }
 
 static void motion_gyro_write(void *opaque, hwaddr addr, uint64_t value,
@@ -363,8 +373,12 @@ static const Property clarion_motion_sensors_properties[] = {
     DEFINE_PROP_UINT32("speed-kmh", ClarionMotionSensorsState, speed_kmh, 0),
     DEFINE_PROP_UINT32("pulses-per-km", ClarionMotionSensorsState,
                        pulses_per_km, 5096),
+    DEFINE_PROP_UINT32("gyro-offset", ClarionMotionSensorsState,
+                       gyro_offset, MOTION_GYRO_DEFAULT_OFFSET),
+    DEFINE_PROP_UINT32("gyro-zero", ClarionMotionSensorsState, gyro_zero,
+                       MOTION_GYRO_DEFAULT_ZERO),
     DEFINE_PROP_UINT32("gyro-raw", ClarionMotionSensorsState, gyro_raw,
-                       MOTION_GYRO_ZERO),
+                       MOTION_GYRO_DEFAULT_ZERO),
 };
 
 static void clarion_motion_sensors_class_init(ObjectClass *klass,

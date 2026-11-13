@@ -2274,6 +2274,8 @@ static void qy8_init(MachineState *machine)
     qdev_prop_set_bit(s->motion_sensors, "level-irq", true);
     qdev_prop_set_bit(s->motion_sensors, "a7-alias", false);
     qdev_prop_set_uint32(s->motion_sensors, "pulses-per-km", 5096);
+    qdev_prop_set_uint32(s->motion_sensors, "gyro-offset", 0x040);
+    qdev_prop_set_uint32(s->motion_sensors, "gyro-zero", 0x4000);
     qdev_prop_set_uint32(s->motion_sensors, "speed-kmh", s->speed_kmh);
     object_property_add_child(OBJECT(s), "motion-sensors",
                               OBJECT(s->motion_sensors));
