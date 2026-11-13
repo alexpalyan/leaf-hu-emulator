@@ -80,7 +80,6 @@
 #define QY7_SCIF3_BASE 0xffe43000
 #define QY7_SCIF5_BASE 0xffe45000
 #define QY7_SCIF7_BASE 0xffe47000
-#define QY7_MOTION_TICK_NS G_GUINT64_CONSTANT(100000000)
 #define QY7_GYRO_ZERO 0x5000
 #define QY7_SCIF_SCSCR_RE 0x0010
 /*
@@ -106,8 +105,6 @@ typedef struct QY7MachineState {
     double yaw_rate;
     double gps_speed_kmh;
     double gps_course;
-    double odometer_m;
-    int64_t motion_last_ns;
     bool wdt_enabled;
     uint16_t status0_inputs;
     bool reverse;
@@ -127,7 +124,6 @@ typedef struct QY7MachineState {
     char *gps_lon;
     DeviceState *gps;
     DeviceState *motion_sensors;
-    QEMUTimer *motion_timer;
     char *can_log_path;
     char *can_replay_path;
     DeviceState *scpu;
@@ -149,7 +145,6 @@ typedef struct QY7DispSink {
 
 static void qy7_mcan_refresh(void *opaque);
 static void qy7_mcan_key_timer(void *opaque);
-static void qy7_motion_tick(void *opaque);
 static char *qy7_gps_lat_get(Object *obj, Error **errp);
 static void qy7_gps_lat_set(Object *obj, const char *value, Error **errp);
 static char *qy7_gps_lon_get(Object *obj, Error **errp);
@@ -170,20 +165,6 @@ static void qy7_gps_position_update(QY7MachineState *s)
                                      g_ascii_strtod(s->gps_lon, NULL));
         clarion_qy7_gps_set_motion(s->gps, s->gps_speed_kmh, s->gps_course);
     }
-}
-
-static void qy7_motion_tick(void *opaque)
-{
-    QY7MachineState *s = opaque;
-    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    int64_t elapsed_ns = now - s->motion_last_ns;
-    double elapsed_s = elapsed_ns > 0 ? elapsed_ns / 1e9 : 0.0;
-
-    s->motion_last_ns = now;
-    if (s->speed_kmh && elapsed_s > 0.0) {
-        s->odometer_m += s->speed_kmh * (elapsed_s / 3.6);
-    }
-    timer_mod(s->motion_timer, now + QY7_MOTION_TICK_NS);
 }
 
 static void qy7_uart_tx(void *opaque, uint8_t byte)
@@ -250,7 +231,6 @@ static void qy7_machine_instance_init(Object *obj)
     s->vehicle_pulses_per_km = 5096;
     s->gyro_raw = QY7_GYRO_ZERO;
     s->yaw_rate = 0.0;
-    s->odometer_m = 0.0;
     s->wdt_enabled = true;
     /* Assumed asserted PowerMonitor input levels (STATUS0 bits 7 and 9). */
     s->status0_inputs = 0x0280;
@@ -269,7 +249,6 @@ static void qy7_machine_instance_init(Object *obj)
     s->gps_lon = g_strdup("10.75");
     s->mcan_refresh = timer_new_ns(QEMU_CLOCK_VIRTUAL, qy7_mcan_refresh, s);
     s->mcan_key_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, qy7_mcan_key_timer, s);
-    s->motion_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, qy7_motion_tick, s);
     object_property_add_uint8_ptr(obj, "micom-generic-reply-subcode",
         &s->micom_generic_reply_subcode, OBJ_PROP_FLAG_READWRITE);
     /*
@@ -438,7 +417,8 @@ static void qy7_get_odometer_m(Object *obj, Visitor *v, const char *name,
                                void *opaque, Error **errp)
 {
     QY7MachineState *s = (QY7MachineState *)obj;
-    double odometer_m = s->odometer_m;
+    double odometer_m = s->motion_sensors ?
+        clarion_motion_sensors_get_odometer_m(s->motion_sensors) : 0.0;
 
     (void)opaque;
     visit_type_number(v, name, &odometer_m, errp);
@@ -1232,9 +1212,6 @@ static void qy7_init(MachineState *machine)
     create_unimplemented_device("qy7.intc-usermask", 0xffd30000, 0x1000);
     create_unimplemented_device("qy7.intc2", 0xffd40000, 0x1000);
 
-    qmachine->motion_last_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    timer_mod(qmachine->motion_timer,
-              qmachine->motion_last_ns + QY7_MOTION_TICK_NS);
 }
 
 static void qy7_machine_init(MachineClass *mc)
