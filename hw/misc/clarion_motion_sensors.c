@@ -215,26 +215,29 @@ static uint64_t motion_gyro_read(void *opaque, hwaddr addr, unsigned size)
     uint32_t value;
 
     switch (addr) {
+    case 0x030:
     case 0x034:
     case 0x038:
         value = 0x5000;
         break;
     case 0x03c:
+    case 0x040:
         value = 0x4000;
         break;
     default:
-        if (addr == s->gyro_offset) {
-            value = s->gyro_raw;
-        } else {
-            qemu_log_mask(LOG_UNIMP,
-                          "clarion-motion-sensors: unimplemented gyro read "
-                          "(size %u, offset 0x%03" HWADDR_PRIx ")\n",
-                          size, addr);
-            value = 0;
-        }
+        qemu_log_mask(LOG_UNIMP,
+                      "clarion-motion-sensors: unimplemented gyro read "
+                      "(size %u, offset 0x%03" HWADDR_PRIx ")\n",
+                      size, addr);
+        value = 0;
         break;
     }
-    trace_clarion_motion_sensors_gyro_read(addr, value);
+    if (addr == s->gyro_offset) {
+        value = s->gyro_raw;
+    }
+    trace_clarion_motion_sensors_gyro_read(
+        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+        qemu_clock_get_ns(QEMU_CLOCK_HOST), addr, value);
     return value;
 }
 
