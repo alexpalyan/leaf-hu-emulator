@@ -454,3 +454,17 @@ properties as well as the motion inputs, so a straight segment followed by
 a left turn can be replayed while tracing `gic_*` events and filtering
 interrupt 141. `-d unimp` helps identify accesses that remain unknown in the
 gyro-A window.
+
+The QY8's GIC SPI 109 is level-sensitive. A short pulse can disappear before
+the CPU acknowledges it, so the shared device holds the IRQ high at each
+100 ms latch until the guest reads SPDPLS-B `+0x10`; that read lowers the
+line and allows the guest to re-enable the interrupt. QY7 retains its pulse
+and INT2 path. For the gyro, QY7 uses A `+0x30` with zero `0x5000`, while
+QY8's navdrv getter reads channel 0 at A `+0x40` with zero `0x4000`. The
+device's `gyro-offset` and `gyro-zero` properties select these layouts; the
+QY7 scale and yaw-rate sign are shared. Trace actual register reads with:
+
+```sh
+build-release/qemu-clarion --read-only --headless NOR \
+    -trace 'clarion_motion_sensors_gyro_read'
+```
