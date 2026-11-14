@@ -420,6 +420,8 @@ R: Yoshinori Sato <yoshinori.sato@nifty.com>
 S: Orphan
 F: target/sh4/
 F: hw/sh4/
+F: hw/misc/clarion_motion_sensors.c
+F: include/hw/misc/clarion_motion_sensors.h
 F: disas/sh4.c
 F: include/hw/sh4/
 F: tests/functional/sh4*/meson.build
