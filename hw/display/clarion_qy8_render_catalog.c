@@ -188,11 +188,13 @@ static gboolean find_romhdr(uint32_t *romhdr, GPtrArray *modules)
 }
 
 static gboolean lookup_export(const Qy8RenderModule *module, const char *wanted,
-                              uint32_t *rva, uint32_t *word)
+                              uint32_t *rva, uint32_t *word,
+                              const char **reason)
 {
     uint32_t exp, nfunc, nname, af_rva, an_rva, ao_rva;
     uint32_t af, an, ao;
 
+    *reason = "export directory unreadable";
     if (!map_rva(module, module->export_rva, &exp) ||
         !read_guest_u32(exp + 20, &nfunc) ||
         !read_guest_u32(exp + 24, &nname) ||
@@ -204,7 +206,7 @@ static gboolean lookup_export(const Qy8RenderModule *module, const char *wanted,
         return FALSE;
     }
     for (uint32_t i = 0; i < nname; i++) {
-        uint32_t name_rva, name_va;
+        uint32_t name_rva, name_va, entry_va;
         uint16_t ordinal_index;
         char name[128];
 
@@ -216,14 +218,18 @@ static gboolean lookup_export(const Qy8RenderModule *module, const char *wanted,
         if (strcmp(name, wanted)) {
             continue;
         }
+        /* vbase + rva is mapped only in the process that loaded the module. */
         if (!read_guest_u16((uint64_t)ao + i * 2, &ordinal_index) ||
             ordinal_index >= nfunc ||
             !read_guest_u32((uint64_t)af + ordinal_index * 4, rva) ||
-            !read_guest_u32((uint64_t)module->vbase + *rva, word)) {
+            !map_rva(module, *rva, &entry_va) ||
+            !read_guest_u32(entry_va, word)) {
+            *reason = "entry point unreadable";
             return FALSE;
         }
         return TRUE;
     }
+    *reason = "not exported by name";
     return FALSE;
 }
 
@@ -249,9 +255,12 @@ gboolean qy8_render_catalog_ensure(const char *const *names, size_t count,
         entry->name = names[i];
         entry->base = module->vbase;
         entry->index = i;
-        if (!lookup_export(module, names[i], &entry->rva, &entry->word)) {
-            error_report_once("clarion-qy8-render: export %s missing from %s",
-                         names[i], module->name);
+        const char *reason;
+
+        if (!lookup_export(module, names[i], &entry->rva, &entry->word,
+                           &reason)) {
+            error_report_once("clarion-qy8-render: export %s from %s: %s",
+                         names[i], module->name, reason);
             g_hash_table_remove_all(exports);
             g_free(entry);
             g_ptr_array_set_size(modules, 0);
